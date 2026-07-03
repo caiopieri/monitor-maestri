@@ -18,7 +18,7 @@ Os comandos `signal` servem **apenas** para notificar o monitor em segundo plano
 
 ## 🤖 Controle Dinâmico e Delegação Inter-Agente
 Ao enviar tarefas para outros terminais usando `maestri ask`, você tem autoridade para alterar modelos e delegar sub-tarefas de acordo com as especialidades de cada terminal/agente.
-* **Alterar Modelos:** Si a tarefa for simples, altere o modelo do destinatário antes do prompt:
+* **Alterar Modelos:** Se a tarefa for simples, altere o modelo do destinatário antes do prompt:
   ```bash
   maestri ask "Jarvis Codex" "/model gpt-4o"
   maestri ask "Jarvis Codex" "[Prompt aqui...]"
@@ -41,8 +41,13 @@ Se você tentar enviar uma tarefa para outro agente usando `maestri ask` e detec
   # Exemplo de empilhamento de tarefa no Codex bloqueado:
   python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py schedule-task "Jarvis Codex" '["/clear", "Faça a spec X..."]' "1s"
   ```
-* **Limpeza de Contexto entre Specs:** Se você estiver enviando ou empilhando tarefas/especificações diferentes de forma sequencial, você **deve** incluir um comando `/clear` no início de cada bloco para evitar o inchaço e a mistura de memórias do terminal de destino.
-  * *Exemplo correto com `/clear`:* `schedule-task "Jarvis Codex" '["/clear", "fazer spec A", "/clear", "fazer spec B"]' "1s"`
+* **Agendamento em Lote / Fila de Comandos:**
+  Você pode enviar uma fila com **várias ações complexas sequenciais** em lote para o agente executar (incluindo limpar o contexto, mudar modelos e enviar prompts diferentes no mesmo agendamento).
+  * *Exemplo:* `schedule-task "Jarvis Codex" '["/clear", "prompt 1", "/clear", "/model o1", "prompt 2"]' "1s"`
+* **Diretriz de Decisão de Fila:** 
+  * **Fluxo Normal (Recomendado):** No fluxo de trabalho padrão, você deve validar o resultado de cada etapa antes de enviar o próximo comando (validação interativa passo a passo).
+  * **Uso de Fila:** Apenas empilhe comandos em lote via monitor se houver uma necessidade clara de execução sequencial direta sem a necessidade de avaliação intermediária humana/agente de cada passo.
+* **Limpeza de Contexto entre Specs:** Se estiver empilhando tarefas/especificações diferentes, você **deve** incluir um comando `/clear` no início de cada bloco para evitar o inchaço e a mistura de memórias do terminal de destino.
 
 ---
 
