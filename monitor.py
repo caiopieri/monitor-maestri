@@ -339,6 +339,8 @@ def send_message_sequence(agent_name, commands):
             time.sleep(3)
         except Exception as e:
             log(f"Error sending step '{command}' to {agent_name}: {e}")
+            # Halt the rest of the sequence to avoid cluttering if a rate limit or command failure occurs in the middle
+            break
 
 def execute_custom_task(task):
     """Executes a custom task in parallel threads for each targeted agent."""
