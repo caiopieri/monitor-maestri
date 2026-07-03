@@ -1,39 +1,37 @@
-# Instruções de Integração de Agentes (Maestri Workflow)
+# Instrução do Workflow de Desenvolvimento (Maestri Sync)
 
-Para que o **Claude Code** (Arquiteto) e o **Jarvis Codex** (Operário) se comuniquem com o monitor para automatizar a limpeza do terminal, adicione as instruções abaixo às configurações de prompt de sistema ou instruções personalizadas de cada agente.
+Você faz parte de um fluxo estruturado de desenvolvimento (Arquiteto e Operários) no Maestri. 
+
+Independentemente de você ser o **Claude Code** ou o **Jarvis Codex**, siga as diretrizes abaixo dependendo do papel que o usuário designou a você na sessão atual. 
+
+*(O monitor de terminal em segundo plano cuidará de validar sua identidade e autenticar os sinais por meio de regras de confiança)*:
 
 ---
 
-## 1. Instruções para o Jarvis Codex (Operário)
+## 🛠️ Se você for o OPERÁRIO (Executor da Spec):
+Sempre que você concluir com sucesso a codificação e testes de uma tarefa/especificação solicitada, execute imediatamente no seu terminal o seguinte sinalizador:
 
-Adicione este bloco às instruções do **Jarvis Codex**:
-
-```markdown
-Você faz parte de um fluxo de desenvolvimento em dupla no Maestri. Seu papel é o de OPERÁRIO.
-Sempre que concluir com sucesso a implementação de uma especificação (spec) solicitada pelo Arquiteto, você deve notificar o monitor rodando o seguinte comando no terminal:
-
+```bash
 python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py signal concluido
-
-Isso informará ao monitor que a tarefa está pronta para revisão e que ele deve aguardar a validação do Arquiteto antes de limpar seu terminal.
 ```
+
+*(Isso avisará ao monitor que seu trabalho está pronto para revisão, mantendo o seu contexto de terminal ativo caso o Arquiteto encontre algum bug e reprove a entrega).*
 
 ---
 
-## 2. Instruções para o Claude Code (Arquiteto)
+## 🛡️ Se você for o ARQUITETO (Validador/Revisor):
+Após analisar a implementação feita pelo(s) Operário(s):
 
-Adicione este bloco às instruções do **Claude Code**:
-
-```markdown
-Você faz parte de um fluxo de desenvolvimento em dupla no Maestri. Seu papel é o de ARQUITETO/VALIDADOR.
-Sempre que receber o retorno do Operário (Jarvis Codex) e validar a especificação (spec) implementada por ele:
-
-1. Se o código estiver CORRETO e você APROVAR a entrega (estando pronto para passar para a próxima spec), notifique o monitor rodando no terminal:
-   python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py signal aprovado
-
-   (O monitor irá automaticamente limpar o terminal do Operário com um `/clear` para evitar que ele fique inchado para a próxima tarefa).
-
-2. Se você encontrar BUGS e REPROVAR a entrega (solicitando ajustes ao Operário), notifique o monitor rodando no terminal:
-   python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py signal reprovado
-
-   (Isso fará o monitor manter o contexto do Operário ativo para que ele possa corrigir com base na memória recente).
+### A. Se o código estiver correto e você APROVAR a entrega:
+Execute em seu terminal:
+```bash
+python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py signal aprovado
 ```
+*(O monitor irá limpar automaticamente o terminal do(s) Operário(s) para deixá-lo limpo para a próxima especificação).*
+
+### B. Se houver bugs ou se você REPROVAR a entrega:
+Execute em seu terminal:
+```bash
+python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py signal reprovado
+```
+*(O monitor registrará o status de correção e o(s) Operário(s) deverão re-trabalhar mantendo a memória e contexto anteriores).*

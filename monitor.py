@@ -10,10 +10,7 @@ import os
 # Persistent storage file paths
 TASKS_FILE = "/Users/caioamaraldepieri/maestri-monitor/tasks.json"
 SIGNALS_FILE = "/Users/caioamaraldepieri/maestri-monitor/signals.json"
-
-# Workflow Terminal Roles (Change if you rename terminals)
-ARCHITECT_AGENT = "Claude Code"
-WORKER_AGENT = "Jarvis Codex"
+SETTINGS_FILE = "/Users/caioamaraldepieri/maestri-monitor/settings.json"
 
 # Regex patterns to extract the reset time from rate-limited terminal screens
 RESET_REGEX = re.compile(r"resets\s+(\d+(?::\d+)?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?", re.IGNORECASE)
@@ -23,6 +20,8 @@ TRY_AGAIN_REGEX = re.compile(r"try\s+again\s+at\s+(\d+(?::\d+)?\s*(?:am|pm)?)", 
 state_lock = threading.RLock()
 state = {
     "auto_monitor_enabled": True,
+    "architect": "Claude Code",
+    "workers": ["Jarvis Codex"],
     "scheduled_resets": {},  # agent_name -> list of target_datetime
     "custom_tasks": [],      # list of dicts: {"id": int, "agents": list, "commands": dict, "time": datetime, "recurring": bool, "recur_time": str}
     "running": True,
@@ -42,7 +41,6 @@ def log(message, print_to_console=False):
         pass
     
     if print_to_console:
-        # Clear current line, print message, and restore the interactive prompt
         sys.stdout.write(f"\r\033[K{log_line}\nmaestri-monitor> ")
         sys.stdout.flush()
 
@@ -103,6 +101,51 @@ def get_connected_notes():
         log(f"Error listing notes: {e}")
         return []
 
+def load_settings():
+    """Loads configuration (roles, auto-monitor status) from settings.json."""
+    global state
+    agents = get_connected_agents()
+    default_arch = "Claude Code" if "Claude Code" in agents else (agents[0] if agents else "Claude Code")
+    default_workers = [a for a in agents if a != default_arch and a.lower() != "shell"]
+    if not default_workers:
+        default_workers = ["Jarvis Codex"]
+        
+    with state_lock:
+        state["auto_monitor_enabled"] = True
+        state["architect"] = default_arch
+        state["workers"] = default_workers
+        
+    if not os.path.exists(SETTINGS_FILE):
+        save_settings()
+        return
+        
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            data = json.load(f)
+        with state_lock:
+            state["auto_monitor_enabled"] = data.get("auto_monitor_enabled", True)
+            state["architect"] = data.get("architect", default_arch)
+            state["workers"] = data.get("workers", default_workers)
+        log("Settings loaded successfully from settings.json")
+    except Exception as e:
+        log(f"Error loading settings from settings.json: {e}")
+
+def save_settings():
+    """Saves current configuration to settings.json."""
+    with state_lock:
+        data = {
+            "auto_monitor_enabled": state["auto_monitor_enabled"],
+            "architect": state["architect"],
+            "workers": state["workers"]
+        }
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+        log("Settings successfully saved to settings.json")
+    except Exception as e:
+        log(f"Error saving settings: {e}")
+
 def update_canvas_note():
     """Updates the first connected canvas note with the current status of the monitor."""
     notes = get_connected_notes()
@@ -116,6 +159,8 @@ def update_canvas_note():
         auto_enabled = state["auto_monitor_enabled"]
         resets = dict(state["scheduled_resets"])
         custom_tasks = list(state["custom_tasks"])
+        architect = state["architect"]
+        workers = list(state["workers"])
         
     content = []
     content.append("# 🖥️ Status do Monitor Maestri")
@@ -124,8 +169,8 @@ def update_canvas_note():
     content.append("")
     
     content.append("## 🚦 Workflow de Desenvolvimento:")
-    content.append(f"* **Arquiteto (Validador):** `{ARCHITECT_AGENT}`")
-    content.append(f"* **Operário (Executor):** `{WORKER_AGENT}`")
+    content.append(f"* **Arquiteto (Validador):** `{architect}`")
+    content.append(f"* **Operário(s) (Executor):** `{', '.join(workers) if workers else 'Nenhum'}`")
     
     # Show last signal states
     try:
@@ -133,22 +178,25 @@ def update_canvas_note():
             with open(SIGNALS_FILE, "r") as f:
                 signals = json.load(f)
             
-            last_worker = None
+            last_worker_signals = {}
             last_arch = None
             for s in reversed(signals):
-                if s["agent"] == WORKER_AGENT and not last_worker:
-                    last_worker = s
-                elif s["agent"] == ARCHITECT_AGENT and not last_arch:
+                agent_name = s["agent"]
+                if agent_name == architect and not last_arch:
                     last_arch = s
+                elif agent_name in workers and agent_name not in last_worker_signals:
+                    last_worker_signals[agent_name] = s
                     
-            if last_worker:
-                w_time = datetime.fromisoformat(last_worker["timestamp"]).strftime("%H:%M:%S")
-                status_emoji = "✅" if last_worker["status"] == "concluido" else "⏳"
-                content.append(f"* {status_emoji} Operário: `{last_worker['status']}` às {w_time}")
+            for w in workers:
+                last_w = last_worker_signals.get(w)
+                if last_w:
+                    w_time = datetime.fromisoformat(last_w["timestamp"]).strftime("%H:%M:%S")
+                    status_emoji = "✅" if last_w["status"] == "concluido" else "⏳"
+                    content.append(f"* {status_emoji} Operário `{w}`: `{last_w['status']}` às {w_time}")
             if last_arch:
                 a_time = datetime.fromisoformat(last_arch["timestamp"]).strftime("%H:%M:%S")
-                arch_emoji = "🎉 APROVADO (Limpo)" if last_arch["status"] == "aprovado" else "❌ REPROVADO (Ajustando)"
-                content.append(f"* 🛡️ Arquiteto: `{arch_emoji}` às {a_time}")
+                arch_emoji = "🎉 APROVADO (Limpando)" if last_arch["status"] == "aprovado" else "❌ REPROVADO (Ajustando)"
+                content.append(f"* 🛡️ Arquiteto `{architect}`: `{arch_emoji}` às {a_time}")
     except Exception:
         pass
     
@@ -352,7 +400,7 @@ def save_tasks():
         log(f"Error saving tasks to tasks.json: {e}")
 
 def process_signals():
-    """Reads unprocessed workflow signals and triggers target actions."""
+    """Reads unprocessed workflow signals and triggers target actions based on trust configurations."""
     if not os.path.exists(SIGNALS_FILE):
         return
         
@@ -364,6 +412,10 @@ def process_signals():
         if not unprocessed:
             return
             
+        with state_lock:
+            architect = state["architect"]
+            workers = list(state["workers"])
+            
         changed = False
         for s in unprocessed:
             agent = s["agent"]
@@ -373,20 +425,27 @@ def process_signals():
             s["processed"] = True
             changed = True
             
-            # Workflow Logic
-            if agent == ARCHITECT_AGENT:
+            # Workflow Role Checking & Trust Logic
+            if agent == architect:
                 if status == "aprovado":
-                    log(f"Arquiteto aprovou a tarefa. Limpando contexto do operário '{WORKER_AGENT}'.", print_to_console=True)
-                    notify_os(f"Spec APROVADA pelo Claude. Limpando {WORKER_AGENT}.")
-                    # Run /clear on Worker terminal
-                    threading.Thread(target=send_message_sequence, args=(WORKER_AGENT, ["/clear"])).start()
+                    log(f"Arquiteto ({architect}) aprovou a tarefa. Limpando contexto dos operários: {', '.join(workers)}.", print_to_console=True)
+                    notify_os(f"Spec APROVADA pelo Arquiteto. Limpando {', '.join(workers)}.")
+                    # Clear all trusted workers
+                    for w in workers:
+                        threading.Thread(target=send_message_sequence, args=(w, ["/clear"])).start()
                 elif status == "reprovado":
-                    log(f"Arquiteto reprovou a tarefa. Mantendo contexto do operário '{WORKER_AGENT}' para ajustes.", print_to_console=True)
-                    notify_os(f"Spec REPROVADA pelo Claude. {WORKER_AGENT} deve ajustar.")
-            elif agent == WORKER_AGENT:
+                    log(f"Arquiteto ({architect}) reprovou a tarefa. Mantendo contexto dos operários para ajustes.", print_to_console=True)
+                    notify_os(f"Spec REPROVADA pelo Arquiteto. Ajustes necessários em {', '.join(workers)}.")
+                else:
+                    log(f"Aviso: Sinal de validador inválido '{status}' enviado pelo Arquiteto ({architect}). Ignorado.", print_to_console=True)
+            elif agent in workers:
                 if status == "concluido":
-                    log(f"Operário concluiu a implementação. Aguardando validação do arquiteto '{ARCHITECT_AGENT}'.", print_to_console=True)
-                    notify_os(f"Tarefa concluída pelo Codex. Aguardando validação.")
+                    log(f"Operário ({agent}) concluiu a implementação. Aguardando validação do Arquiteto ({architect}).", print_to_console=True)
+                    notify_os(f"Tarefa concluída por {agent}. Aguardando validação do Arquiteto.")
+                else:
+                    log(f"Alerta de Segurança: Operário ({agent}) tentou enviar sinal restrito de Arquiteto ('{status}'). Recusado por falta de confiança.", print_to_console=True)
+            else:
+                log(f"Sinal de agente desconhecido / não associado ao fluxo ('{agent}': '{status}'). Ignorado.", print_to_console=True)
                     
         if changed:
             with open(SIGNALS_FILE, "w") as f:
@@ -403,7 +462,7 @@ def background_loop():
         try:
             now = datetime.now()
             
-            # 1. Process signals from signals.json
+            # 1. Process workflow signals
             process_signals()
             
             # 2. Handle Automatic Rate Limit Monitoring (if enabled)
@@ -551,6 +610,7 @@ def interactive_menu():
     print("Comandos disponíveis:")
     print("  status       - Exibe o estado do monitoramento e agendamentos")
     print("  toggle       - Ativa/Desativa o monitoramento automático de limite")
+    print("  roles        - Configura dinamicamente quem é o Arquiteto e os Operários")
     print("  schedule     - Menu interativo para criar agendamento personalizado")
     print("  cancel       - Cancela um agendamento personalizado por ID")
     print("  create-note  - Cria uma nota de status acoplada no canvas")
@@ -571,13 +631,68 @@ def interactive_menu():
                 state["running"] = False
                 break
             elif cmd == "help":
-                print("Comandos: status, toggle, schedule, cancel, create-note, logs [n], help, exit")
+                print("Comandos: status, toggle, roles, schedule, cancel, create-note, logs [n], help, exit")
             elif cmd == "toggle":
                 with state_lock:
                     state["auto_monitor_enabled"] = not state["auto_monitor_enabled"]
                     status = "ATIVADO" if state["auto_monitor_enabled"] else "DESATIVADO"
+                save_settings()
                 print(f"Monitoramento automático de limite: {status}")
                 log(f"Auto monitoring toggled to: {status}")
+                threading.Thread(target=update_canvas_note).start()
+            elif cmd == "roles":
+                agents = get_connected_agents()
+                agents = [a for a in agents if a.lower() != "shell"]
+                if not agents:
+                    print("Erro: Nenhum agente conectado encontrado.")
+                    continue
+                
+                print("\nTerminais conectados disponíveis:")
+                for idx, agent in enumerate(agents):
+                    print(f"  {idx + 1}. {agent}")
+                    
+                try:
+                    arch_idx = int(input("\nSelecione o Arquiteto (número único): ").strip()) - 1
+                    if not (0 <= arch_idx < len(agents)):
+                        print("Seleção de Arquiteto inválida.")
+                        continue
+                    arch_name = agents[arch_idx]
+                except ValueError:
+                    print("Entrada inválida.")
+                    continue
+                
+                print("\nTerminais restantes para Operário(s):")
+                remaining_agents = [a for a in agents if a != arch_name]
+                if not remaining_agents:
+                    print("Não há outros terminais para definir como Operário.")
+                    worker_names = []
+                else:
+                    for idx, agent in enumerate(remaining_agents):
+                        print(f"  {idx + 1}. {agent}")
+                    
+                    worker_input = input("Escolha os Operários (números separados por vírgula, ex: 1,2, ou ENTER para todos): ").strip()
+                    worker_names = []
+                    if not worker_input:
+                        worker_names = remaining_agents
+                    else:
+                        try:
+                            worker_idxs = [int(x.strip()) - 1 for x in worker_input.split(",") if x.strip()]
+                            for idx in worker_idxs:
+                                if 0 <= idx < len(remaining_agents):
+                                    worker_names.append(remaining_agents[idx])
+                        except ValueError:
+                            print("Seleção de Operários inválida. Adicionando todos por padrão.")
+                            worker_names = remaining_agents
+                
+                with state_lock:
+                    state["architect"] = arch_name
+                    state["workers"] = worker_names
+                
+                save_settings()
+                print(f"\n✓ Funções atualizadas com sucesso!")
+                print(f"  Arquiteto (Validador): {arch_name}")
+                print(f"  Operário(s) (Executor): {', '.join(worker_names) if worker_names else 'Nenhum'}")
+                log(f"Roles updated - Architect: {arch_name}, Workers: {', '.join(worker_names)}")
                 threading.Thread(target=update_canvas_note).start()
             elif cmd.startswith("logs"):
                 parts = cmd_input.split()
@@ -617,6 +732,8 @@ def interactive_menu():
                 print("-" * 50)
                 with state_lock:
                     print(f"Monitoramento automático: {'ATIVADO' if state['auto_monitor_enabled'] else 'DESATIVADO'}")
+                    print(f"Arquiteto (Validador): {state['architect']}")
+                    print(f"Operário(s) (Executor): {', '.join(state['workers'])}")
                     
                     print("\nAgendamentos automáticos ativos:")
                     has_auto = False
@@ -868,6 +985,9 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "signal":
         handle_signal_cli()
     else:
+        # Load configurations and roles
+        load_settings()
+        
         # Load any tasks from disk
         load_tasks()
         
