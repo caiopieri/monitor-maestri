@@ -578,12 +578,13 @@ def background_loop():
                 for task in state["custom_tasks"]:
                     if now >= task["time"]:
                         
-                        # RATE LIMIT PROTECTION FOR CUSTOM TASKS:
-                        # Check if any targeted agent in this custom task is currently rate-limited.
-                        # If so, postpone the task execution to the unlock reset time.
+                        # RATE LIMIT & BUSY PROTECTION FOR CUSTOM TASKS:
                         postponed = False
                         max_reset_dt = None
+                        busy_agents = []
+                        
                         for agent in task["agents"]:
+                            # A. Check rate limit
                             limit_info = check_agent_limit(agent)
                             if limit_info:
                                 time_str, tz_str = limit_info
@@ -595,15 +596,26 @@ def background_loop():
                                     postponed = True
                                 except Exception as pe:
                                     log(f"Failed to parse reset time for postponement of task ID {task['id']}: {pe}")
-                                    
+                            
+                            # B. Check if agent is busy (actively working on another task)
+                            elif get_agent_state(agent) == "trabalhando":
+                                busy_agents.append(agent)
+                                
                         if postponed and max_reset_dt:
                             log(f"Tarefa ID {task['id']} adiada para {max_reset_dt.strftime('%Y-%m-%d %H:%M:%S')} devido a limite de cota.", print_to_console=True)
                             notify_os(f"Tarefa ID {task['id']} adiada para {max_reset_dt.strftime('%H:%M:%S')} (cota cheia).")
                             task["time"] = max_reset_dt
                             pending_tasks.append(task)
                             tasks_changed = True
+                        elif busy_agents:
+                            # Postpone by 30 seconds because agent is busy working on a current spec
+                            postpone_time = now + timedelta(seconds=30)
+                            log(f"Tarefa ID {task['id']} adiada em 30s pois os terminais estão ocupados: {', '.join(busy_agents)}", print_to_console=False)
+                            task["time"] = postpone_time
+                            pending_tasks.append(task)
+                            tasks_changed = True
                         else:
-                            # Not limited, proceed with execution
+                            # Not limited and not busy, proceed with execution
                             execute_custom_task(task)
                             if task["recurring"]:
                                 next_time = task["time"] + timedelta(days=1)
