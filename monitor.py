@@ -576,17 +576,44 @@ def background_loop():
                 tasks_changed = False
                 for task in state["custom_tasks"]:
                     if now >= task["time"]:
-                        execute_custom_task(task)
-                        if task["recurring"]:
-                            next_time = task["time"] + timedelta(days=1)
-                            while next_time <= now:
-                                next_time += timedelta(days=1)
-                            task["time"] = next_time
+                        
+                        # RATE LIMIT PROTECTION FOR CUSTOM TASKS:
+                        # Check if any targeted agent in this custom task is currently rate-limited.
+                        # If so, postpone the task execution to the unlock reset time.
+                        postponed = False
+                        max_reset_dt = None
+                        for agent in task["agents"]:
+                            limit_info = check_agent_limit(agent)
+                            if limit_info:
+                                time_str, tz_str = limit_info
+                                try:
+                                    hour, minute = parse_reset_time(time_str)
+                                    reset_dt = calculate_next_datetime(hour, minute)
+                                    if not max_reset_dt or reset_dt > max_reset_dt:
+                                        max_reset_dt = reset_dt
+                                    postponed = True
+                                except Exception as pe:
+                                    log(f"Failed to parse reset time for postponement of task ID {task['id']}: {pe}")
+                                    
+                        if postponed and max_reset_dt:
+                            log(f"Tarefa ID {task['id']} adiada para {max_reset_dt.strftime('%Y-%m-%d %H:%M:%S')} devido a limite de cota.", print_to_console=True)
+                            notify_os(f"Tarefa ID {task['id']} adiada para {max_reset_dt.strftime('%H:%M:%S')} (cota cheia).")
+                            task["time"] = max_reset_dt
                             pending_tasks.append(task)
-                            log(f"Rescheduled recurring task ID {task['id']} for {next_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                            tasks_changed = True
                         else:
-                            log(f"One-time task ID {task['id']} completed and removed.")
-                        tasks_changed = True
+                            # Not limited, proceed with execution
+                            execute_custom_task(task)
+                            if task["recurring"]:
+                                next_time = task["time"] + timedelta(days=1)
+                                while next_time <= now:
+                                    next_time += timedelta(days=1)
+                                task["time"] = next_time
+                                pending_tasks.append(task)
+                                log(f"Rescheduled recurring task ID {task['id']} for {next_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                            else:
+                                log(f"One-time task ID {task['id']} completed and removed.")
+                            tasks_changed = True
                     else:
                         pending_tasks.append(task)
                 
