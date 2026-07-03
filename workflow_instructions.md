@@ -18,7 +18,7 @@ Os comandos `signal` servem **apenas** para notificar o monitor em segundo plano
 
 ## 🤖 Controle Dinâmico e Delegação Inter-Agente
 Ao enviar tarefas para outros terminais usando `maestri ask`, você tem autoridade para alterar modelos e delegar sub-tarefas de acordo com as especialidades de cada terminal/agente.
-* **Alterar Modelos:** Se a tarefa for simples, altere o modelo do destinatário antes do prompt:
+* **Alterar Modelos:** Si a tarefa for simples, altere o modelo do destinatário antes do prompt:
   ```bash
   maestri ask "Jarvis Codex" "/model gpt-4o"
   maestri ask "Jarvis Codex" "[Prompt aqui...]"
@@ -26,7 +26,23 @@ Ao enviar tarefas para outros terminais usando `maestri ask`, você tem autorida
 * **Delegação Especializada:** Aproveite os pontos fortes de cada agente e modelo para sub-tarefas específicas:
   * **Exemplo:** Se você precisar gerar ou editar imagens e mockups de interface de alta fidelidade, delegue essa tarefa para o terminal `Antigravity` (que possui acesso nativo ao `generate_image` e frameworks de design).
   * **Uso:** `maestri ask "Antigravity" "Gere uma imagem com o prompt tal..."`
-  * Isso se aplica a qualquer tarefa especializada (vídeos, análise matemática complexa, scraping pesado) que outro agente/modelo faça melhor.
+
+---
+
+## 📅 Empilhamento e Agendamento de Tarefas sob Limite de Cota
+Se você tentar enviar uma tarefa para outro agente usando `maestri ask` e detectar que ele está com **limite de cota ativo (rate-limited)**, você não precisa ficar ocioso ou falhar. Você pode **empilhar e agendar a tarefa no monitor** para rodar automaticamente assim que o limite expirar.
+
+* **Comando para Agendar via Terminal:**
+  ```bash
+  python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py schedule-task "<agente>" "<json_array_de_comandos>" "<tempo>"
+  ```
+* **Aproveitamento do Auto-Postpone:** Como o monitor possui proteção de cota ativa, você pode definir o tempo como `"1s"` (1 segundo). Se o agente de destino estiver bloqueado, o monitor automaticamente detectará o limite, calculará o reset e adiará o agendamento para o segundo exato de liberação.
+  ```bash
+  # Exemplo de empilhamento de tarefa no Codex bloqueado:
+  python3 /Users/caioamaraldepieri/maestri-monitor/monitor.py schedule-task "Jarvis Codex" '["/clear", "Faça a spec X..."]' "1s"
+  ```
+* **Limpeza de Contexto entre Specs:** Se você estiver enviando ou empilhando tarefas/especificações diferentes de forma sequencial, você **deve** incluir um comando `/clear` no início de cada bloco para evitar o inchaço e a mistura de memórias do terminal de destino.
+  * *Exemplo correto com `/clear`:* `schedule-task "Jarvis Codex" '["/clear", "fazer spec A", "/clear", "fazer spec B"]' "1s"`
 
 ---
 

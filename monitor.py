@@ -794,6 +794,69 @@ def handle_wake_prompt_cli():
     save_settings()
     print(f"✓ Prompt de retorno configurado para '{agent_name}': '{prompt}' (Fixo: {fixed})")
 
+def handle_schedule_task_cli():
+    """Handles programmatic task scheduling via CLI from agent terminals."""
+    if len(sys.argv) < 5:
+        print("Erro: Parâmetros insuficientes. Uso: python3 monitor.py schedule-task '<agentes>' '<json_comandos>' '<tempo>'")
+        print("Exemplo: python3 monitor.py schedule-task 'Jarvis Codex' '[\"/clear\", \"fazer spec X\"]' '1s'")
+        sys.exit(1)
+        
+    agents_str = sys.argv[2]
+    cmds_json = sys.argv[3]
+    time_input = sys.argv[4]
+    
+    target_agents = [a.strip() for a in agents_str.split(",") if a.strip()]
+    try:
+        cmds_list = json.loads(cmds_json)
+        if not isinstance(cmds_list, list):
+            raise ValueError()
+    except Exception:
+        print("Erro: O argumento de comandos deve ser um array JSON de strings. Ex: '[\"/clear\", \"prompt\"]'")
+        sys.exit(1)
+        
+    target_time = None
+    rel_delta = parse_relative_time(time_input)
+    if rel_delta:
+        target_time = datetime.now() + rel_delta
+    else:
+        try:
+            t_parts = datetime.strptime(time_input, "%H:%M")
+            now = datetime.now()
+            target_time = now.replace(hour=t_parts.hour, minute=t_parts.minute, second=0, microsecond=0)
+            if target_time <= now:
+                target_time += timedelta(days=1)
+        except ValueError:
+            try:
+                target_time = datetime.strptime(time_input, "%Y-%m-%d %H:%M")
+            except ValueError:
+                pass
+                
+    if not target_time:
+        print("Erro: Formato de data/tempo inválido (use tempo relativo como '1s', '5m' ou absoluto 'HH:MM').")
+        sys.exit(1)
+        
+    # Map command list to dict for each agent
+    commands_dict = {agent: cmds_list for agent in target_agents}
+    
+    load_tasks()
+    with state_lock:
+        task_id = state["task_counter"]
+        state["task_counter"] += 1
+        new_task = {
+            "id": task_id,
+            "agents": target_agents,
+            "commands": commands_dict,
+            "time": target_time,
+            "recurring": False
+        }
+        state["custom_tasks"].append(new_task)
+        save_tasks()
+        
+    log(f"Custom task {task_id} scheduled via CLI for {', '.join(target_agents)} at {target_time}")
+    threading.Thread(target=update_canvas_note).start()
+    print(f"✓ Tarefa ID {task_id} agendada com sucesso para {target_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    sys.exit(0)
+
 def interactive_menu():
     global state
     print("=" * 60)
@@ -1186,6 +1249,8 @@ if __name__ == "__main__":
             handle_get_role_cli()
         elif arg == "set-role":
             handle_set_role_cli()
+        elif arg == "schedule-task":
+            handle_schedule_task_cli()
         else:
             print(f"Comando CLI desconhecido: '{arg}'")
             sys.exit(1)
