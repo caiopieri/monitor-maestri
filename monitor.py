@@ -329,12 +329,13 @@ def calculate_next_datetime(hour, minute):
     return target
 
 def send_message_sequence(agent_name, commands):
-    """Sends a sequence of commands to the agent with a small delay between each."""
+    """Sends a sequence of commands to the agent, waiting for each command to finish executing before sending the next."""
     for i, command in enumerate(commands):
         log(f"Sending step {i+1}/{len(commands)} to {agent_name}: '{command}'")
         try:
             cmd = ["maestri", "ask", agent_name, command]
-            subprocess.Popen(cmd)
+            # Synchronous execution ensures that the next command is sent only when the agent has fully processed the current one.
+            subprocess.run(cmd, check=True)
             time.sleep(3)
         except Exception as e:
             log(f"Error sending step '{command}' to {agent_name}: {e}")
