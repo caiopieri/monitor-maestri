@@ -1,0 +1,9 @@
+{
+    "auto_monitor_enabled": true,
+    "architect": "Codex",
+    "workers": [
+        "Claude Code"
+    ],
+    "agent_states": {},
+    "wake_prompts": {}
+}
