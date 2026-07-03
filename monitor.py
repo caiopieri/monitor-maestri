@@ -7,8 +7,13 @@ import threading
 import json
 import os
 
-# Persistent storage file path
+# Persistent storage file paths
 TASKS_FILE = "/Users/caioamaraldepieri/maestri-monitor/tasks.json"
+SIGNALS_FILE = "/Users/caioamaraldepieri/maestri-monitor/signals.json"
+
+# Workflow Terminal Roles (Change if you rename terminals)
+ARCHITECT_AGENT = "Claude Code"
+WORKER_AGENT = "Jarvis Codex"
 
 # Regex patterns to extract the reset time from rate-limited terminal screens
 RESET_REGEX = re.compile(r"resets\s+(\d+(?::\d+)?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?", re.IGNORECASE)
@@ -19,13 +24,13 @@ state_lock = threading.RLock()
 state = {
     "auto_monitor_enabled": True,
     "scheduled_resets": {},  # agent_name -> list of target_datetime
-    "custom_tasks": [],      # list of dicts: {"id": int, "agents": list, "commands": dict (agent -> list), "time": datetime, "recurring": bool, "recur_time": str}
+    "custom_tasks": [],      # list of dicts: {"id": int, "agents": list, "commands": dict, "time": datetime, "recurring": bool, "recur_time": str}
     "running": True,
     "task_counter": 1
 }
 
 def log(message, print_to_console=False):
-    """Logs messages to a file, sends OS notifications if high importance, and outputs to the console."""
+    """Logs messages to a file, sends OS notifications, and outputs to the console."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     log_line = f"[{timestamp}] {message}"
     
@@ -118,6 +123,36 @@ def update_canvas_note():
     content.append(f"**Monitoramento Automático:** {'✅ ATIVADO' if auto_enabled else '❌ DESATIVADO'}")
     content.append("")
     
+    content.append("## 🚦 Workflow de Desenvolvimento:")
+    content.append(f"* **Arquiteto (Validador):** `{ARCHITECT_AGENT}`")
+    content.append(f"* **Operário (Executor):** `{WORKER_AGENT}`")
+    
+    # Show last signal states
+    try:
+        if os.path.exists(SIGNALS_FILE):
+            with open(SIGNALS_FILE, "r") as f:
+                signals = json.load(f)
+            
+            last_worker = None
+            last_arch = None
+            for s in reversed(signals):
+                if s["agent"] == WORKER_AGENT and not last_worker:
+                    last_worker = s
+                elif s["agent"] == ARCHITECT_AGENT and not last_arch:
+                    last_arch = s
+                    
+            if last_worker:
+                w_time = datetime.fromisoformat(last_worker["timestamp"]).strftime("%H:%M:%S")
+                status_emoji = "✅" if last_worker["status"] == "concluido" else "⏳"
+                content.append(f"* {status_emoji} Operário: `{last_worker['status']}` às {w_time}")
+            if last_arch:
+                a_time = datetime.fromisoformat(last_arch["timestamp"]).strftime("%H:%M:%S")
+                arch_emoji = "🎉 APROVADO (Limpo)" if last_arch["status"] == "aprovado" else "❌ REPROVADO (Ajustando)"
+                content.append(f"* 🛡️ Arquiteto: `{arch_emoji}` às {a_time}")
+    except Exception:
+        pass
+    
+    content.append("")
     content.append("## ⏳ Limites de Cota Ativos:")
     has_resets = False
     for agent, targets in resets.items():
@@ -250,7 +285,6 @@ def load_tasks():
             agents = t_data["agents"]
             commands = t_data["commands"]
             
-            # Backward compatibility: Convert list to dict mapping
             if isinstance(commands, list):
                 commands = {agent: commands for agent in agents}
                 
@@ -259,7 +293,6 @@ def load_tasks():
             if recurring:
                 recur_time_str = t_data["recur_time"]
                 hour, minute = parse_reset_time(recur_time_str)
-                # Calculate next occurrence
                 target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                 if target_time <= now:
                     target_time += timedelta(days=1)
@@ -318,6 +351,51 @@ def save_tasks():
     except Exception as e:
         log(f"Error saving tasks to tasks.json: {e}")
 
+def process_signals():
+    """Reads unprocessed workflow signals and triggers target actions."""
+    if not os.path.exists(SIGNALS_FILE):
+        return
+        
+    try:
+        with open(SIGNALS_FILE, "r") as f:
+            signals = json.load(f)
+            
+        unprocessed = [s for s in signals if not s.get("processed", False)]
+        if not unprocessed:
+            return
+            
+        changed = False
+        for s in unprocessed:
+            agent = s["agent"]
+            status = s["status"]
+            
+            log(f"Processando sinal '{status}' recebido de '{agent}'", print_to_console=True)
+            s["processed"] = True
+            changed = True
+            
+            # Workflow Logic
+            if agent == ARCHITECT_AGENT:
+                if status == "aprovado":
+                    log(f"Arquiteto aprovou a tarefa. Limpando contexto do operário '{WORKER_AGENT}'.", print_to_console=True)
+                    notify_os(f"Spec APROVADA pelo Claude. Limpando {WORKER_AGENT}.")
+                    # Run /clear on Worker terminal
+                    threading.Thread(target=send_message_sequence, args=(WORKER_AGENT, ["/clear"])).start()
+                elif status == "reprovado":
+                    log(f"Arquiteto reprovou a tarefa. Mantendo contexto do operário '{WORKER_AGENT}' para ajustes.", print_to_console=True)
+                    notify_os(f"Spec REPROVADA pelo Claude. {WORKER_AGENT} deve ajustar.")
+            elif agent == WORKER_AGENT:
+                if status == "concluido":
+                    log(f"Operário concluiu a implementação. Aguardando validação do arquiteto '{ARCHITECT_AGENT}'.", print_to_console=True)
+                    notify_os(f"Tarefa concluída pelo Codex. Aguardando validação.")
+                    
+        if changed:
+            with open(SIGNALS_FILE, "w") as f:
+                json.dump(signals, f, indent=4)
+            threading.Thread(target=update_canvas_note).start()
+            
+    except Exception as e:
+        log(f"Error in process_signals: {e}")
+
 def background_loop():
     """Runs the periodic monitoring loop (every 15s) and checks schedules."""
     global state
@@ -325,7 +403,10 @@ def background_loop():
         try:
             now = datetime.now()
             
-            # 1. Handle Automatic Rate Limit Monitoring (if enabled)
+            # 1. Process signals from signals.json
+            process_signals()
+            
+            # 2. Handle Automatic Rate Limit Monitoring (if enabled)
             with state_lock:
                 monitor_enabled = state["auto_monitor_enabled"]
                 
@@ -364,7 +445,7 @@ def background_loop():
                             if agent in state["scheduled_resets"]:
                                 state["scheduled_resets"][agent] = [t for t in state["scheduled_resets"][agent] if t > now - timedelta(hours=2)]
 
-            # 2. Check and trigger Automatic Rate Limit wake-ups
+            # 3. Check and trigger Automatic Rate Limit wake-ups
             with state_lock:
                 for agent, targets in list(state["scheduled_resets"].items()):
                     for target_dt in list(targets):
@@ -374,7 +455,7 @@ def background_loop():
                             threading.Thread(target=send_message_sequence, args=(agent, ["pode continuar"])).start()
                             targets.remove(target_dt)
 
-            # 3. Check and trigger Custom Tasks
+            # 4. Check and trigger Custom Tasks
             with state_lock:
                 pending_tasks = []
                 tasks_changed = False
@@ -382,7 +463,6 @@ def background_loop():
                     if now >= task["time"]:
                         execute_custom_task(task)
                         if task["recurring"]:
-                            # Reschedule daily task
                             next_time = task["time"] + timedelta(days=1)
                             while next_time <= now:
                                 next_time += timedelta(days=1)
@@ -399,7 +479,7 @@ def background_loop():
                     state["custom_tasks"] = pending_tasks
                     save_tasks()
                     
-            # 4. Periodically update canvas note
+            # 5. Periodically update canvas note
             threading.Thread(target=update_canvas_note).start()
 
         except Exception as e:
@@ -424,6 +504,44 @@ def parse_relative_time(dur_str):
     elif unit == 'd':
         return timedelta(days=amount)
     return None
+
+def handle_signal_cli():
+    """Handles terminal command 'python3 monitor.py signal <status>' sent by agents."""
+    if len(sys.argv) < 3:
+        print("Erro: Status ausente. Uso: python3 monitor.py signal <concluido|aprovado|reprovado>")
+        sys.exit(1)
+        
+    status = sys.argv[2].lower().strip()
+    agent_name = os.environ.get("MAESTRI_TERMINAL_NAME")
+    if not agent_name:
+        print("Erro: A variável de ambiente MAESTRI_TERMINAL_NAME não está definida.")
+        sys.exit(1)
+        
+    if status not in ["concluido", "aprovado", "reprovado"]:
+        print("Erro: Status inválido. Escolha entre: concluido, aprovado, reprovado")
+        sys.exit(1)
+        
+    try:
+        signals = []
+        if os.path.exists(SIGNALS_FILE):
+            with open(SIGNALS_FILE, "r") as f:
+                signals = json.load(f)
+                
+        signals.append({
+            "agent": agent_name,
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "processed": False
+        })
+        
+        os.makedirs(os.path.dirname(SIGNALS_FILE), exist_ok=True)
+        with open(SIGNALS_FILE, "w") as f:
+            json.dump(signals, f, indent=4)
+            
+        print(f"✓ Sinal '{status}' registrado com sucesso para o terminal '{agent_name}'.")
+    except Exception as e:
+        print(f"Erro ao registrar sinal: {e}")
+        sys.exit(1)
 
 def interactive_menu():
     global state
@@ -624,7 +742,6 @@ def interactive_menu():
                                 commands[agent].append(msg)
                             print("✓ Mensagem adicionada para todos os terminais.")
                     elif choice == "4":
-                        # Check if any commands were added
                         has_commands = False
                         for agent in target_agents:
                             if commands[agent]:
@@ -747,13 +864,17 @@ def interactive_menu():
             break
 
 if __name__ == "__main__":
-    # Load any tasks from disk
-    load_tasks()
-    
-    # Start the monitoring thread
-    t = threading.Thread(target=background_loop)
-    t.daemon = True
-    t.start()
-    
-    # Start interactive menu in main thread
-    interactive_menu()
+    # Check if we are running in signal CLI mode
+    if len(sys.argv) > 1 and sys.argv[1] == "signal":
+        handle_signal_cli()
+    else:
+        # Load any tasks from disk
+        load_tasks()
+        
+        # Start the monitoring thread
+        t = threading.Thread(target=background_loop)
+        t.daemon = True
+        t.start()
+        
+        # Start interactive menu in main thread
+        interactive_menu()
