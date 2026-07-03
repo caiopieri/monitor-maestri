@@ -19,13 +19,13 @@ state_lock = threading.RLock()
 state = {
     "auto_monitor_enabled": True,
     "scheduled_resets": {},  # agent_name -> list of target_datetime
-    "custom_tasks": [],      # list of dicts: {"id": int, "agents": list, "commands": list, "time": datetime, "recurring": bool, "recur_time": str}
+    "custom_tasks": [],      # list of dicts: {"id": int, "agents": list, "commands": dict (agent -> list), "time": datetime, "recurring": bool, "recur_time": str}
     "running": True,
     "task_counter": 1
 }
 
 def log(message, print_to_console=False):
-    """Logs messages to a file and optionally outputs to the interactive console."""
+    """Logs messages to a file, sends OS notifications if high importance, and outputs to the console."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     log_line = f"[{timestamp}] {message}"
     
@@ -40,6 +40,15 @@ def log(message, print_to_console=False):
         # Clear current line, print message, and restore the interactive prompt
         sys.stdout.write(f"\r\033[K{log_line}\nmaestri-monitor> ")
         sys.stdout.flush()
+
+def notify_os(message):
+    """Sends a native macOS desktop notification using AppleScript."""
+    try:
+        escaped_msg = message.replace('"', '\\"').replace("'", "\\'")
+        cmd = ["osascript", "-e", f'display notification "{escaped_msg}" with title "Maestri Monitor"']
+        subprocess.Popen(cmd)
+    except Exception as e:
+        log(f"Failed to send OS notification: {e}")
 
 def get_connected_agents():
     """Runs `maestri list` and returns a list of connected agent names."""
@@ -64,6 +73,82 @@ def get_connected_agents():
     except Exception as e:
         log(f"Error listing agents: {e}")
         return []
+
+def get_connected_notes():
+    """Runs `maestri list` and returns a list of connected note names."""
+    try:
+        cmd = ["maestri", "list"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        lines = result.stdout.splitlines()
+        
+        notes = []
+        in_notes = False
+        for line in lines:
+            if "Connected notes" in line:
+                in_notes = True
+                continue
+            if in_notes:
+                match = re.search(r'-\s+name:\s*"([^"]+)"', line)
+                if match:
+                    notes.append(match.group(1))
+                elif line.strip() and not line.startswith(" ") and not line.startswith("-"):
+                    in_notes = False
+        return notes
+    except Exception as e:
+        log(f"Error listing notes: {e}")
+        return []
+
+def update_canvas_note():
+    """Updates the first connected canvas note with the current status of the monitor."""
+    notes = get_connected_notes()
+    if not notes:
+        return
+        
+    note_name = notes[0]
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    with state_lock:
+        auto_enabled = state["auto_monitor_enabled"]
+        resets = dict(state["scheduled_resets"])
+        custom_tasks = list(state["custom_tasks"])
+        
+    content = []
+    content.append("# 🖥️ Status do Monitor Maestri")
+    content.append(f"**Última Atualização:** {now_str}")
+    content.append(f"**Monitoramento Automático:** {'✅ ATIVADO' if auto_enabled else '❌ DESATIVADO'}")
+    content.append("")
+    
+    content.append("## ⏳ Limites de Cota Ativos:")
+    has_resets = False
+    for agent, targets in resets.items():
+        for t in targets:
+            content.append(f"* **{agent}**: libera em `{t.strftime('%Y-%m-%d %H:%M:%S')}`")
+            has_resets = True
+    if not has_resets:
+        content.append("* Nenhum limite ativo detectado.")
+        
+    content.append("")
+    content.append("## 📅 Agendamentos Personalizados:")
+    if not custom_tasks:
+        content.append("* Nenhum agendamento ativo.")
+    else:
+        for task in custom_tasks:
+            rec_str = " (Diário)" if task["recurring"] else " (Único)"
+            content.append(f"* **[ID {task['id']}]**{rec_str} - Agentes: `{', '.join(task['agents'])}`")
+            content.append(f"  * Executa em: `{task['time'].strftime('%Y-%m-%d %H:%M:%S')}`")
+            summary_parts = []
+            for agent in task["agents"]:
+                cmds = task["commands"].get(agent, [])
+                summary_parts.append(f"{agent}: {' -> '.join(cmds)}")
+            content.append(f"  * Passos: {'; '.join(summary_parts)}")
+            
+    full_content = "\n".join(content)
+    
+    try:
+        cmd = ["maestri", "note", "write", note_name, full_content]
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except Exception as e:
+        log(f"Failed to update canvas note '{note_name}': {e}")
 
 def check_agent_limit(agent_name):
     """Runs `maestri check` on the agent and returns (time_str, tz_str) if limited, else None."""
@@ -133,13 +218,16 @@ def send_message_sequence(agent_name, commands):
 def execute_custom_task(task):
     """Executes a custom task in parallel threads for each targeted agent."""
     agents = task["agents"]
-    commands = task["commands"]
+    commands_dict = task["commands"]
     log(f"Executing scheduled task ID {task['id']} for agents: {', '.join(agents)}", print_to_console=True)
+    notify_os(f"Executando tarefa agendada ID {task['id']} nos terminais: {', '.join(agents)}")
     
     for agent in agents:
-        t = threading.Thread(target=send_message_sequence, args=(agent, commands))
-        t.daemon = True
-        t.start()
+        agent_commands = commands_dict.get(agent, [])
+        if agent_commands:
+            t = threading.Thread(target=send_message_sequence, args=(agent, agent_commands))
+            t.daemon = True
+            t.start()
 
 def load_tasks():
     """Loads custom tasks from persistent JSON file."""
@@ -161,6 +249,11 @@ def load_tasks():
                 
             agents = t_data["agents"]
             commands = t_data["commands"]
+            
+            # Backward compatibility: Convert list to dict mapping
+            if isinstance(commands, list):
+                commands = {agent: commands for agent in agents}
+                
             recurring = t_data.get("recurring", False)
             
             if recurring:
@@ -191,7 +284,6 @@ def load_tasks():
                         "recurring": False
                     })
                 else:
-                    # One-time task in the past, clean it up
                     log(f"Cleaning up expired one-time task ID {task_id} on startup (was scheduled for {time_str})")
                     
         with state_lock:
@@ -261,6 +353,7 @@ def background_loop():
                                 if not already_scheduled:
                                     log(f"Detected limit for {agent}: resets at {time_str} ({tz_str})")
                                     log(f"Scheduling wake-up message for {agent} at {target_dt.strftime('%Y-%m-%d %H:%M:%S')}", print_to_console=True)
+                                    notify_os(f"Limite detectado no terminal '{agent}'. Retorno agendado para {target_dt.strftime('%H:%M:%S')}.")
                                     if agent not in state["scheduled_resets"]:
                                         state["scheduled_resets"][agent] = []
                                     state["scheduled_resets"][agent].append(target_dt)
@@ -277,6 +370,7 @@ def background_loop():
                     for target_dt in list(targets):
                         if now >= target_dt:
                             log(f"Auto-waking {agent} after rate-limit reset.", print_to_console=True)
+                            notify_os(f"Enviando 'pode continuar' para o terminal '{agent}'.")
                             threading.Thread(target=send_message_sequence, args=(agent, ["pode continuar"])).start()
                             targets.remove(target_dt)
 
@@ -304,6 +398,9 @@ def background_loop():
                 if tasks_changed:
                     state["custom_tasks"] = pending_tasks
                     save_tasks()
+                    
+            # 4. Periodically update canvas note
+            threading.Thread(target=update_canvas_note).start()
 
         except Exception as e:
             log(f"Error in background loop: {e}")
@@ -334,32 +431,70 @@ def interactive_menu():
     print("          MAESTRI INTERACTIVE MONITOR & SCHEDULER")
     print("=" * 60)
     print("Comandos disponíveis:")
-    print("  status    - Exibe o estado do monitoramento e agendamentos")
-    print("  toggle    - Ativa/Desativa o monitoramento automático de limite")
-    print("  schedule  - Abre o menu interativo para agendar uma tarefa personalizada")
-    print("  cancel    - Cancela um agendamento personalizado por ID")
-    print("  help      - Mostra esta ajuda")
-    print("  exit      - Finaliza o script")
+    print("  status       - Exibe o estado do monitoramento e agendamentos")
+    print("  toggle       - Ativa/Desativa o monitoramento automático de limite")
+    print("  schedule     - Menu interativo para criar agendamento personalizado")
+    print("  cancel       - Cancela um agendamento personalizado por ID")
+    print("  create-note  - Cria uma nota de status acoplada no canvas")
+    print("  logs [n]     - Imprime os últimos N registros de log (padrão: 15)")
+    print("  help         - Mostra esta ajuda")
+    print("  exit         - Finaliza o script")
     print("-" * 60)
     
     while state["running"]:
         try:
-            cmd = input("maestri-monitor> ").strip().lower()
-            if not cmd:
+            cmd_input = input("maestri-monitor> ").strip()
+            if not cmd_input:
                 continue
                 
+            cmd = cmd_input.lower()
             if cmd == "exit":
                 print("Encerrando monitor...")
                 state["running"] = False
                 break
             elif cmd == "help":
-                print("Comandos: status, toggle, schedule, cancel, help, exit")
+                print("Comandos: status, toggle, schedule, cancel, create-note, logs [n], help, exit")
             elif cmd == "toggle":
                 with state_lock:
                     state["auto_monitor_enabled"] = not state["auto_monitor_enabled"]
                     status = "ATIVADO" if state["auto_monitor_enabled"] else "DESATIVADO"
                 print(f"Monitoramento automático de limite: {status}")
                 log(f"Auto monitoring toggled to: {status}")
+                threading.Thread(target=update_canvas_note).start()
+            elif cmd.startswith("logs"):
+                parts = cmd_input.split()
+                n_lines = 15
+                if len(parts) > 1:
+                    try:
+                        n_lines = int(parts[1])
+                    except ValueError:
+                        print("Número de linhas inválido. Mostrando 15 linhas.")
+                
+                log_file = "/Users/caioamaraldepieri/maestri-monitor/monitor.log"
+                if not os.path.exists(log_file):
+                    print("Nenhum log encontrado ainda.")
+                    continue
+                    
+                try:
+                    with open(log_file, "r") as f:
+                        lines = f.readlines()
+                    print("-" * 50)
+                    print(f"Últimos {n_lines} registros de log:")
+                    for line in lines[-n_lines:]:
+                        print(line.strip())
+                    print("-" * 50)
+                except Exception as e:
+                    print(f"Erro ao ler arquivo de log: {e}")
+            elif cmd == "create-note":
+                print("Criando nota de status no canvas...")
+                try:
+                    cmd_create = ["maestri", "note", "create", "# Status do Monitor Maestri\nIniciando..."]
+                    subprocess.run(cmd_create, capture_output=True, text=True, check=True)
+                    print("✓ Nota criada com sucesso!")
+                    log("Created status note on canvas.")
+                    threading.Thread(target=update_canvas_note).start()
+                except Exception as e:
+                    print(f"Erro ao criar nota: {e}")
             elif cmd == "status":
                 print("-" * 50)
                 with state_lock:
@@ -381,7 +516,9 @@ def interactive_menu():
                         rec_str = " (Diário)" if task["recurring"] else " (Único)"
                         print(f"  [ID {task['id']}]{rec_str} Agentes: {', '.join(task['agents'])}")
                         print(f"          Executa em: {task['time'].strftime('%Y-%m-%d %H:%M:%S')}")
-                        print(f"          Passos: { ' -> '.join(task['commands']) }")
+                        for agent in task["agents"]:
+                            cmds = task["commands"].get(agent, [])
+                            print(f"          Passos para {agent}: { ' -> '.join(cmds) }")
                 print("-" * 50)
             elif cmd == "schedule":
                 # 1. Get connected agents
@@ -414,20 +551,100 @@ def interactive_menu():
                     
                 print(f"Terminais selecionados: {', '.join(target_agents)}")
                 
-                # 2. Command sequence inputs
-                print("\nDigite a sequência de mensagens/comandos que deseja enviar.")
-                print("Pressione ENTER vazio para finalizar.")
-                commands = []
+                # 2. Command sequence wizard
+                commands = {agent: [] for agent in target_agents}
                 step = 1
+                cancelled = False
                 while True:
-                    step_cmd = input(f"  Passo {step}: ").strip()
-                    if not step_cmd:
+                    print(f"\n--- Passo {step} ---")
+                    print("Escolha o tipo de ação:")
+                    print("  1. Limpar terminal (/clear)")
+                    print("  2. Alterar modelo (/model)")
+                    print("  3. Escrever mensagem livre (qualquer prompt)")
+                    print("  4. Concluir agendamento")
+                    print("  5. Cancelar")
+                    
+                    choice = input("Ação (1-5): ").strip()
+                    if choice == "1":
+                        for agent in target_agents:
+                            commands[agent].append("/clear")
+                        print("✓ Ação '/clear' adicionada para todos os terminais.")
+                    elif choice == "2":
+                        # Prompt model selection for each agent
+                        for agent in target_agents:
+                            print(f"\nSelecione o modelo para o terminal '{agent}':")
+                            if "claude" in agent.lower():
+                                print("  1. Ignorar (não mudar)")
+                                print("  2. sonnet (Claude 3.5 Sonnet)")
+                                print("  3. haiku (Claude 3.5 Haiku)")
+                                print("  4. opus (Claude 3 Opus)")
+                                print("  5. high (High Effort)")
+                                print("  6. low (Low Effort)")
+                                print("  7. Outro (digitar manualmente)")
+                                m_choice = input("Opção (1-7): ").strip()
+                                if m_choice == "2":
+                                    commands[agent].append("/model sonnet")
+                                elif m_choice == "3":
+                                    commands[agent].append("/model haiku")
+                                elif m_choice == "4":
+                                    commands[agent].append("/model opus")
+                                elif m_choice == "5":
+                                    commands[agent].append("/model high")
+                                elif m_choice == "6":
+                                    commands[agent].append("/model low")
+                                elif m_choice == "7":
+                                    custom_m = input("Digite o nome/comando do modelo: ").strip()
+                                    if custom_m:
+                                        commands[agent].append(f"/model {custom_m}")
+                            else:
+                                print("  1. Ignorar (não mudar)")
+                                print("  2. gpt-4o")
+                                print("  3. o1")
+                                print("  4. o3-mini")
+                                print("  5. gpt-5.5 medium")
+                                print("  6. Outro (digitar manualmente)")
+                                m_choice = input("Opção (1-6): ").strip()
+                                if m_choice == "2":
+                                    commands[agent].append("/model gpt-4o")
+                                elif m_choice == "3":
+                                    commands[agent].append("/model o1")
+                                elif m_choice == "4":
+                                    commands[agent].append("/model o3-mini")
+                                elif m_choice == "5":
+                                    commands[agent].append("/model gpt-5.5 medium")
+                                elif m_choice == "6":
+                                    custom_m = input("Digite o nome/comando do modelo: ").strip()
+                                    if custom_m:
+                                        commands[agent].append(f"/model {custom_m}")
+                        print("✓ Ações de alteração de modelo salvas.")
+                    elif choice == "3":
+                        msg = input("Digite a mensagem livre: ").strip()
+                        if msg:
+                            for agent in target_agents:
+                                commands[agent].append(msg)
+                            print("✓ Mensagem adicionada para todos os terminais.")
+                    elif choice == "4":
+                        # Check if any commands were added
+                        has_commands = False
+                        for agent in target_agents:
+                            if commands[agent]:
+                                has_commands = True
+                                break
+                        if not has_commands:
+                            print("Nenhum comando adicionado na sequência. Adicione ao menos um passo.")
+                            continue
                         break
-                    commands.append(step_cmd)
+                    elif choice == "5":
+                        cancelled = True
+                        break
+                    else:
+                        print("Opção inválida.")
+                        continue
+                    
                     step += 1
                     
-                if not commands:
-                    print("Nenhum comando fornecido. Cancelado.")
+                if cancelled:
+                    print("Cancelado.")
                     continue
                     
                 # 3. Recurring or One-time
@@ -494,8 +711,9 @@ def interactive_menu():
                     
                 rec_label = "Diário" if is_recurring else "Único"
                 print(f"✓ Agendamento ({rec_label}) criado com sucesso!")
-                print(f"  [ID {task_id}] Executará em {target_time.strftime('%Y-%m-%d %H:%M:%S')} nos agentes: {', '.join(target_agents)}")
+                print(f"  [ID {task_id}] Executará em {target_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 log(f"Custom task {task_id} ({rec_label}) scheduled for {', '.join(target_agents)} at {target_time}")
+                threading.Thread(target=update_canvas_note).start()
             elif cmd == "cancel":
                 try:
                     task_id_to_cancel = int(input("Digite o ID do agendamento para cancelar: ").strip())
@@ -518,6 +736,7 @@ def interactive_menu():
                     
                 if found:
                     print(f"✓ Agendamento ID {task_id_to_cancel} cancelado.")
+                    threading.Thread(target=update_canvas_note).start()
                 else:
                     print("Agendamento não encontrado.")
             else:
