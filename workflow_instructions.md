@@ -16,14 +16,17 @@ Os comandos `signal` servem **apenas** para notificar o monitor em segundo plano
 
 ---
 
-## 🤖 Controle Dinâmico de Modelos Inter-Agente
-Ao enviar uma tarefa para outro terminal usando `maestri ask`, você tem autoridade para gerenciar e alterar o modelo daquele terminal de acordo com a complexidade da tarefa.
-* **Como fazer:** Se você (ex: Arquiteto) sabe que uma especificação pode ser resolvida por um modelo mais simples ou rápido, altere o modelo do destinatário antes de enviar o prompt principal:
+## 🤖 Controle Dinâmico e Delegação Inter-Agente
+Ao enviar tarefas para outros terminais usando `maestri ask`, você tem autoridade para alterar modelos e delegar sub-tarefas de acordo com as especialidades de cada terminal/agente.
+* **Alterar Modelos:** Se a tarefa for simples, altere o modelo do destinatário antes do prompt:
   ```bash
   maestri ask "Jarvis Codex" "/model gpt-4o"
-  maestri ask "Jarvis Codex" "[Prompt da especificação aqui...]"
+  maestri ask "Jarvis Codex" "[Prompt aqui...]"
   ```
-* **Comandos de Modelo Comuns:** `/model sonnet`, `/model haiku`, `/model opus`, `/model gpt-4o`, `/model o1`, `/model o3-mini`, `/model high`, `/model low`, ou qualquer outro modelo válido suportado pelo terminal de destino.
+* **Delegação Especializada:** Aproveite os pontos fortes de cada agente e modelo para sub-tarefas específicas:
+  * **Exemplo:** Se você precisar gerar ou editar imagens e mockups de interface de alta fidelidade, delegue essa tarefa para o terminal `Antigravity` (que possui acesso nativo ao `generate_image` e frameworks de design).
+  * **Uso:** `maestri ask "Antigravity" "Gere uma imagem com o prompt tal..."`
+  * Isso se aplica a qualquer tarefa especializada (vídeos, análise matemática complexa, scraping pesado) que outro agente/modelo faça melhor.
 
 ---
 
