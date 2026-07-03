@@ -620,6 +620,90 @@ def parse_relative_time(dur_str):
         return timedelta(days=amount)
     return None
 
+def handle_get_role_cli():
+    """Handles terminal command 'python3 monitor.py get-role' sent by agents to know their active workflow role."""
+    agent_name = os.environ.get("MAESTRI_TERMINAL_NAME")
+    if not agent_name:
+        print("Erro: A variável MAESTRI_TERMINAL_NAME não está definida.")
+        sys.exit(1)
+        
+    load_settings()
+    with state_lock:
+        architect = state.get("architect")
+        workers = state.get("workers", [])
+        
+    if agent_name == architect:
+        print("arquiteto")
+    elif agent_name in workers:
+        print("operario")
+    else:
+        print("desconhecido")
+    sys.exit(0)
+
+def handle_set_role_cli():
+    """Handles terminal command 'python3 monitor.py set-role <arquiteto|operario>' sent by agents to change their role dynamically."""
+    if len(sys.argv) < 3:
+        print("Erro: Papel ausente. Uso: python3 monitor.py set-role <arquiteto|operario>")
+        sys.exit(1)
+        
+    role = sys.argv[2].lower().strip()
+    agent_name = os.environ.get("MAESTRI_TERMINAL_NAME")
+    if not agent_name:
+        print("Erro: A variável MAESTRI_TERMINAL_NAME não está definida.")
+        sys.exit(1)
+        
+    if role not in ["arquiteto", "operario"]:
+        print("Erro: Papel inválido. Escolha entre: arquiteto, operario")
+        sys.exit(1)
+        
+    load_settings()
+    with state_lock:
+        old_arch = state["architect"]
+        old_workers = list(state["workers"])
+        
+        if role == "arquiteto":
+            if agent_name == old_arch:
+                print(f"Você já é o arquiteto.")
+                sys.exit(0)
+            
+            # Demote old architect to worker
+            if old_arch and old_arch not in old_workers:
+                old_workers.append(old_arch)
+                
+            # Promote caller to architect
+            state["architect"] = agent_name
+            
+            # Remove caller from workers
+            if agent_name in old_workers:
+                old_workers.remove(agent_name)
+                
+            state["workers"] = old_workers
+            
+        elif role == "operario":
+            if agent_name in old_workers:
+                print(f"Você já é um operário.")
+                sys.exit(0)
+                
+            if agent_name == old_arch:
+                if not old_workers:
+                    print("Erro: Não é possível se definir como operário pois não há outros agentes para assumir como arquiteto.")
+                    sys.exit(1)
+                new_arch = old_workers.pop(0)
+                state["architect"] = new_arch
+                old_workers.append(agent_name)
+                state["workers"] = old_workers
+                print(f"✓ Novo arquiteto designado: {new_arch}")
+            else:
+                old_workers.append(agent_name)
+                state["workers"] = old_workers
+                
+    save_settings()
+    log(f"Roles dynamically updated via CLI - Architect: {state['architect']}, Workers: {', '.join(state['workers'])}")
+    notify_os(f"Funções atualizadas via CLI. Novo Arquiteto: {state['architect']}")
+    threading.Thread(target=update_canvas_note).start()
+    print(f"✓ Seu papel no monitor foi definido como '{role}'.")
+    sys.exit(0)
+
 def handle_signal_cli():
     """Handles terminal command 'python3 monitor.py signal <status>' sent by agents."""
     if len(sys.argv) < 3:
@@ -1064,11 +1148,20 @@ def interactive_menu():
             break
 
 if __name__ == "__main__":
-    # Check if we are running in signal CLI mode
-    if len(sys.argv) > 1 and sys.argv[1] == "signal":
-        handle_signal_cli()
-    elif len(sys.argv) > 1 and sys.argv[1] == "set-wake-prompt":
-        handle_wake_prompt_cli()
+    # Check if we are running in signal/CLI modes
+    if len(sys.argv) > 1:
+        arg = sys.argv[1].lower().strip()
+        if arg == "signal":
+            handle_signal_cli()
+        elif arg == "set-wake-prompt":
+            handle_wake_prompt_cli()
+        elif arg == "get-role":
+            handle_get_role_cli()
+        elif arg == "set-role":
+            handle_set_role_cli()
+        else:
+            print(f"Comando CLI desconhecido: '{arg}'")
+            sys.exit(1)
     else:
         # Load configurations and roles
         load_settings()
