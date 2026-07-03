@@ -136,8 +136,39 @@ def load_settings():
     except Exception as e:
         log(f"Error loading settings from settings.json: {e}")
 
+def sync_maestri_roles():
+    """Synchronizes architect and worker roles to the Maestri canvas using 'maestri role assign'."""
+    with state_lock:
+        architect = state["architect"]
+        workers = list(state["workers"])
+        
+    agents = get_connected_agents()
+    if not agents:
+        return
+        
+    for agent in agents:
+        if agent.lower() == "shell":
+            continue
+            
+        try:
+            if agent == architect:
+                log(f"Sincronizando papel no Maestri: atribuindo 'Arquiteto-Verificador' para '{agent}'")
+                res = subprocess.run(["maestri", "role", "assign", agent, "Arquiteto-Verificador"], capture_output=True, text=True)
+            elif agent in workers:
+                log(f"Sincronizando papel no Maestri: atribuindo 'Construtor' para '{agent}'")
+                res = subprocess.run(["maestri", "role", "assign", agent, "Construtor"], capture_output=True, text=True)
+            else:
+                log(f"Sincronizando papel no Maestri: limpando papel para '{agent}'")
+                res = subprocess.run(["maestri", "role", "assign", agent, "--none"], capture_output=True, text=True)
+                
+            if res.returncode != 0 and ("not the Maestro" in res.stderr or "not the Maestro" in res.stdout):
+                log("Aviso: Este terminal do monitor não está definido como Maestro no Canvas. Não foi possível atribuir papéis no Maestri.", print_to_console=False)
+                break
+        except Exception as e:
+            log(f"Erro ao sincronizar papel do agente '{agent}' no Maestri: {e}")
+
 def save_settings():
-    """Saves current configuration to settings.json."""
+    """Saves current configuration to settings.json and synchronizes roles to the Maestri canvas."""
     with state_lock:
         data = {
             "auto_monitor_enabled": state["auto_monitor_enabled"],
@@ -153,6 +184,9 @@ def save_settings():
         log("Settings successfully saved to settings.json")
     except Exception as e:
         log(f"Error saving settings: {e}")
+        
+    # Synchronize roles on the Maestri canvas in the background
+    threading.Thread(target=sync_maestri_roles, daemon=True).start()
 
 def get_agent_state(agent_name):
     """Gets the current workflow state of the agent."""

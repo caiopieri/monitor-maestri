@@ -2,7 +2,7 @@
     "auto_monitor_enabled": true,
     "architect": "Codex",
     "workers": [
-        "Claude Code"
+        "OpenCode"
     ],
     "agent_states": {},
     "wake_prompts": {}
