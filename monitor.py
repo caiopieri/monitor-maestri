@@ -22,8 +22,10 @@ state = {
     "auto_monitor_enabled": True,
     "architect": "Claude Code",
     "workers": ["Jarvis Codex"],
+    "agent_states": {},      # agent_name -> "ocioso" | "trabalhando" | "concluido"
+    "wake_prompts": {},      # agent_name -> {"prompt": "...", "fixed": bool}
     "scheduled_resets": {},  # agent_name -> list of target_datetime
-    "custom_tasks": [],      # list of dicts: {"id": int, "agents": list, "commands": dict, "time": datetime, "recurring": bool, "recur_time": str}
+    "custom_tasks": [],      # list of dicts
     "running": True,
     "task_counter": 1
 }
@@ -102,7 +104,7 @@ def get_connected_notes():
         return []
 
 def load_settings():
-    """Loads configuration (roles, auto-monitor status) from settings.json."""
+    """Loads configuration (roles, auto-monitor status, states, prompts) from settings.json."""
     global state
     agents = get_connected_agents()
     default_arch = "Claude Code" if "Claude Code" in agents else (agents[0] if agents else "Claude Code")
@@ -114,6 +116,8 @@ def load_settings():
         state["auto_monitor_enabled"] = True
         state["architect"] = default_arch
         state["workers"] = default_workers
+        state["agent_states"] = {}
+        state["wake_prompts"] = {}
         
     if not os.path.exists(SETTINGS_FILE):
         save_settings()
@@ -126,6 +130,8 @@ def load_settings():
             state["auto_monitor_enabled"] = data.get("auto_monitor_enabled", True)
             state["architect"] = data.get("architect", default_arch)
             state["workers"] = data.get("workers", default_workers)
+            state["agent_states"] = data.get("agent_states", {})
+            state["wake_prompts"] = data.get("wake_prompts", {})
         log("Settings loaded successfully from settings.json")
     except Exception as e:
         log(f"Error loading settings from settings.json: {e}")
@@ -136,7 +142,9 @@ def save_settings():
         data = {
             "auto_monitor_enabled": state["auto_monitor_enabled"],
             "architect": state["architect"],
-            "workers": state["workers"]
+            "workers": state["workers"],
+            "agent_states": state["agent_states"],
+            "wake_prompts": state["wake_prompts"]
         }
     try:
         os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
@@ -145,6 +153,34 @@ def save_settings():
         log("Settings successfully saved to settings.json")
     except Exception as e:
         log(f"Error saving settings: {e}")
+
+def get_agent_state(agent_name):
+    """Gets the current workflow state of the agent."""
+    with state_lock:
+        states = state.get("agent_states", {})
+        return states.get(agent_name, "ocioso")
+
+def set_agent_state(agent_name, status):
+    """Sets and saves the workflow state of the agent."""
+    with state_lock:
+        if "agent_states" not in state:
+            state["agent_states"] = {}
+        state["agent_states"][agent_name] = status
+    save_settings()
+
+def get_wake_prompt(agent_name):
+    """Retrieves and returns the custom wake-up prompt for the agent, cleaning up one-time prompts."""
+    with state_lock:
+        prompts = state.get("wake_prompts", {})
+        if agent_name in prompts:
+            p_info = prompts[agent_name]
+            prompt = p_info["prompt"]
+            if not p_info.get("fixed", False):
+                # Clean up one-time custom prompt
+                del prompts[agent_name]
+                threading.Thread(target=save_settings).start()
+            return prompt
+    return "pode continuar"
 
 def update_canvas_note():
     """Updates the first connected canvas note with the current status of the monitor."""
@@ -169,8 +205,11 @@ def update_canvas_note():
     content.append("")
     
     content.append("## 🚦 Workflow de Desenvolvimento:")
-    content.append(f"* **Arquiteto (Validador):** `{architect}`")
-    content.append(f"* **Operário(s) (Executor):** `{', '.join(workers) if workers else 'Nenhum'}`")
+    content.append(f"* **Arquiteto (Validador):** `{architect}` (Estado: `{get_agent_state(architect).upper()}`)")
+    
+    content.append("* **Operário(s) (Executor):**")
+    for w in workers:
+        content.append(f"  * `{w}` (Estado: `{get_agent_state(w).upper()}`)")
     
     # Show last signal states
     try:
@@ -187,16 +226,18 @@ def update_canvas_note():
                 elif agent_name in workers and agent_name not in last_worker_signals:
                     last_worker_signals[agent_name] = s
                     
+            content.append("")
+            content.append("### Últimos Eventos Registrados:")
             for w in workers:
                 last_w = last_worker_signals.get(w)
                 if last_w:
                     w_time = datetime.fromisoformat(last_w["timestamp"]).strftime("%H:%M:%S")
-                    status_emoji = "✅" if last_w["status"] == "concluido" else "⏳"
-                    content.append(f"* {status_emoji} Operário `{w}`: `{last_w['status']}` às {w_time}")
+                    status_emoji = "✅" if last_w["status"] == "concluido" else ("⏳" if last_w["status"] == "trabalhando" else "💤")
+                    content.append(f"* {status_emoji} `{w}`: `{last_w['status']}` às {w_time}")
             if last_arch:
                 a_time = datetime.fromisoformat(last_arch["timestamp"]).strftime("%H:%M:%S")
                 arch_emoji = "🎉 APROVADO (Limpando)" if last_arch["status"] == "aprovado" else "❌ REPROVADO (Ajustando)"
-                content.append(f"* 🛡️ Arquiteto `{architect}`: `{arch_emoji}` às {a_time}")
+                content.append(f"* 🛡️ `{architect}`: `{arch_emoji}` às {a_time}")
     except Exception:
         pass
     
@@ -425,23 +466,32 @@ def process_signals():
             s["processed"] = True
             changed = True
             
-            # Workflow Role Checking & Trust Logic
+            # Workflow Role Checking & State Logic
             if agent == architect:
-                if status == "aprovado":
+                if status == "trabalhando":
+                    set_agent_state(agent, "trabalhando")
+                elif status == "aprovado":
                     log(f"Arquiteto ({architect}) aprovou a tarefa. Limpando contexto dos operários: {', '.join(workers)}.", print_to_console=True)
                     notify_os(f"Spec APROVADA pelo Arquiteto. Limpando {', '.join(workers)}.")
-                    # Clear all trusted workers
+                    set_agent_state(architect, "ocioso")
                     for w in workers:
+                        set_agent_state(w, "ocioso")
                         threading.Thread(target=send_message_sequence, args=(w, ["/clear"])).start()
                 elif status == "reprovado":
                     log(f"Arquiteto ({architect}) reprovou a tarefa. Mantendo contexto dos operários para ajustes.", print_to_console=True)
                     notify_os(f"Spec REPROVADA pelo Arquiteto. Ajustes necessários em {', '.join(workers)}.")
+                    set_agent_state(architect, "ocioso")
+                    for w in workers:
+                        set_agent_state(w, "trabalhando")
                 else:
                     log(f"Aviso: Sinal de validador inválido '{status}' enviado pelo Arquiteto ({architect}). Ignorado.", print_to_console=True)
             elif agent in workers:
-                if status == "concluido":
+                if status == "trabalhando":
+                    set_agent_state(agent, "trabalhando")
+                elif status == "concluido":
                     log(f"Operário ({agent}) concluiu a implementação. Aguardando validação do Arquiteto ({architect}).", print_to_console=True)
                     notify_os(f"Tarefa concluída por {agent}. Aguardando validação do Arquiteto.")
+                    set_agent_state(agent, "concluido")
                 else:
                     log(f"Alerta de Segurança: Operário ({agent}) tentou enviar sinal restrito de Arquiteto ('{status}'). Recusado por falta de confiança.", print_to_console=True)
             else:
@@ -473,6 +523,11 @@ def background_loop():
                 agents = get_connected_agents()
                 for agent in agents:
                     if agent.lower() == "shell":
+                        continue
+                        
+                    # CRITICAL WAKE RULE: Only monitor rate-limit if agent's current state is "trabalhando"
+                    agent_state = get_agent_state(agent)
+                    if agent_state != "trabalhando":
                         continue
                         
                     limit_info = check_agent_limit(agent)
@@ -509,9 +564,10 @@ def background_loop():
                 for agent, targets in list(state["scheduled_resets"].items()):
                     for target_dt in list(targets):
                         if now >= target_dt:
-                            log(f"Auto-waking {agent} after rate-limit reset.", print_to_console=True)
-                            notify_os(f"Enviando 'pode continuar' para o terminal '{agent}'.")
-                            threading.Thread(target=send_message_sequence, args=(agent, ["pode continuar"])).start()
+                            wake_prompt = get_wake_prompt(agent)
+                            log(f"Auto-waking {agent} after rate-limit reset with prompt: '{wake_prompt}'", print_to_console=True)
+                            notify_os(f"Enviando '{wake_prompt}' para o terminal '{agent}'.")
+                            threading.Thread(target=send_message_sequence, args=(agent, [wake_prompt])).start()
                             targets.remove(target_dt)
 
             # 4. Check and trigger Custom Tasks
@@ -567,7 +623,7 @@ def parse_relative_time(dur_str):
 def handle_signal_cli():
     """Handles terminal command 'python3 monitor.py signal <status>' sent by agents."""
     if len(sys.argv) < 3:
-        print("Erro: Status ausente. Uso: python3 monitor.py signal <concluido|aprovado|reprovado>")
+        print("Erro: Status ausente. Uso: python3 monitor.py signal <trabalhando|concluido|aprovado|reprovado>")
         sys.exit(1)
         
     status = sys.argv[2].lower().strip()
@@ -576,8 +632,8 @@ def handle_signal_cli():
         print("Erro: A variável de ambiente MAESTRI_TERMINAL_NAME não está definida.")
         sys.exit(1)
         
-    if status not in ["concluido", "aprovado", "reprovado"]:
-        print("Erro: Status inválido. Escolha entre: concluido, aprovado, reprovado")
+    if status not in ["trabalhando", "concluido", "aprovado", "reprovado"]:
+        print("Erro: Status inválido. Escolha entre: trabalhando, concluido, aprovado, reprovado")
         sys.exit(1)
         
     try:
@@ -601,6 +657,31 @@ def handle_signal_cli():
     except Exception as e:
         print(f"Erro ao registrar sinal: {e}")
         sys.exit(1)
+
+def handle_wake_prompt_cli():
+    """Handles terminal command 'python3 monitor.py set-wake-prompt <prompt> [--fixed]' sent by agents."""
+    if len(sys.argv) < 3:
+        print("Erro: Prompt ausente. Uso: python3 monitor.py set-wake-prompt '<prompt>' [--fixed]")
+        sys.exit(1)
+        
+    prompt = sys.argv[2]
+    fixed = "--fixed" in sys.argv
+    
+    agent_name = os.environ.get("MAESTRI_TERMINAL_NAME")
+    if not agent_name:
+        print("Erro: A variável MAESTRI_TERMINAL_NAME não está definida.")
+        sys.exit(1)
+        
+    load_settings()
+    with state_lock:
+        if "wake_prompts" not in state:
+            state["wake_prompts"] = {}
+        state["wake_prompts"][agent_name] = {
+            "prompt": prompt,
+            "fixed": fixed
+        }
+    save_settings()
+    print(f"✓ Prompt de retorno configurado para '{agent_name}': '{prompt}' (Fixo: {fixed})")
 
 def interactive_menu():
     global state
@@ -732,8 +813,10 @@ def interactive_menu():
                 print("-" * 50)
                 with state_lock:
                     print(f"Monitoramento automático: {'ATIVADO' if state['auto_monitor_enabled'] else 'DESATIVADO'}")
-                    print(f"Arquiteto (Validador): {state['architect']}")
+                    print(f"Arquiteto (Validador): {state['architect']} (Estado: {get_agent_state(state['architect']).upper()})")
                     print(f"Operário(s) (Executor): {', '.join(state['workers'])}")
+                    for w in state['workers']:
+                        print(f"  - {w}: {get_agent_state(w).upper()}")
                     
                     print("\nAgendamentos automáticos ativos:")
                     has_auto = False
@@ -984,6 +1067,8 @@ if __name__ == "__main__":
     # Check if we are running in signal CLI mode
     if len(sys.argv) > 1 and sys.argv[1] == "signal":
         handle_signal_cli()
+    elif len(sys.argv) > 1 and sys.argv[1] == "set-wake-prompt":
+        handle_wake_prompt_cli()
     else:
         # Load configurations and roles
         load_settings()
