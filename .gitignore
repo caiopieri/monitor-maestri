@@ -1,0 +1,8 @@
+# Ignore logs and active tasks local to this workspace
+monitor.log
+tasks.json
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
