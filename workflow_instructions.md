@@ -1,12 +1,25 @@
 ---
 name: maestri-workflow
-description: Workflow instructions for Arquiteto (Claude Code) and Operário (Jarvis Codex) task synchronization and context clearing.
+description: Workflow instructions for Arquiteto (Claude Code) and Operário (Jarvis Codex) task synchronization, role alignment, and process templates.
 user-invocable: true
 ---
 
 # Maestri Workflow (Arquiteto & Operário Sync)
 
 Você faz parte de um fluxo de desenvolvimento colaborativo no Maestri, composto por um Arquiteto (Validador/Revisor) e um ou mais Operários (Executores). 
+
+---
+
+## 📁 Acesso ao Kit de Processo (Metodologia e Templates)
+Você tem acesso direto à pasta com a metodologia oficial e todos os templates do projeto no seguinte caminho absoluto:
+* **Caminho:** `/Users/caioamaraldepieri/Desktop/Projects/kit-processo`
+* **Arquivos Úteis para Consulta:**
+  * **Metodologia:** [METODO-DE-TRABALHO.md](file:///Users/caioamaraldepieri/Desktop/Projects/kit-processo/METODO-DE-TRABALHO.md) (Fonte única de todo o processo do time).
+  * **Checklist:** [CHECKLIST-INICIO-PROJETO.md](file:///Users/caioamaraldepieri/Desktop/Projects/kit-processo/CHECKLIST-INICIO-PROJETO.md) (Checklist de passos do início ao fim).
+  * **Templates:** Localizados na pasta [templates/](file:///Users/caioamaraldepieri/Desktop/Projects/kit-processo/templates/) (Modelos oficiais de PRD, Handoff, Spec e Log de Verificação).
+  * **Exemplos:** Localizados na pasta [exemplos/](file:///Users/caioamaraldepieri/Desktop/Projects/kit-processo/exemplos/) (Exemplo real de Handoff preenchido e verificado).
+
+Você **deve** consultar esta pasta e seguir rigorosamente as diretrizes e templates oficiais ao redigir especificações (Specs), handoffs e atualizar o log de verificação!
 
 ---
 
