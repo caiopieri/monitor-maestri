@@ -11,7 +11,7 @@ O script funciona sem dependências externas (usa apenas a biblioteca padrão do
 1. **Monitoramento automático de limite (Rate Limit):**
    * Identifica automaticamente quando agentes conectados no Maestri (como o `Claude Code` ou `Jarvis Codex`) atingem o limite de uso diário ou de sessão.
    * Lê a tela do terminal bloqueado para extrair o horário de desbloqueio (suporta formatos como `resets 9pm` ou `try again at 11:27 PM`).
-   * Agenda e envia automaticamente a mensagem `"pode continuar"` no segundo exato em que o limite expirar.
+   * Agenda e envia automaticamente a mensagem `"pode continuar"` 10 minutos e 21 segundos após o horário informado para o limite expirar, dando uma margem de segurança para o terminal liberar.
    
 2. **Menu interativo (Interface de linha de comando):**
    * Interface interativa rodando em tempo real enquanto os loops de agendamento ocorrem em segundo plano.

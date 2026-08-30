@@ -353,13 +353,13 @@ def parse_reset_time(time_str):
         
     return hour, minute
 
-def calculate_next_datetime(hour, minute):
-    """Calculates the next occurrence of the given hour and minute in local time."""
+def calculate_next_datetime(hour, minute, delay=timedelta(seconds=30)):
+    """Calculates the next occurrence of a time in local time plus an optional delay."""
     now = datetime.now()
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += timedelta(days=1)
-    target += timedelta(seconds=30)
+    target += delay
     return target
 
 def send_message_sequence(agent_name, commands):
@@ -572,7 +572,11 @@ def background_loop():
                         time_str, tz_str = limit_info
                         try:
                             hour, minute = parse_reset_time(time_str)
-                            target_dt = calculate_next_datetime(hour, minute)
+                            # Give the limited terminal a non-round safety margin
+                            # after the reported reset before sending the prompt.
+                            target_dt = calculate_next_datetime(
+                                hour, minute, delay=timedelta(minutes=10, seconds=21)
+                            )
                             
                             with state_lock:
                                 already_scheduled = False
@@ -584,8 +588,8 @@ def background_loop():
                                             
                                 if not already_scheduled:
                                     log(f"Detected limit for {agent}: resets at {time_str} ({tz_str})")
-                                    log(f"Scheduling wake-up message for {agent} at {target_dt.strftime('%Y-%m-%d %H:%M:%S')}", print_to_console=True)
-                                    notify_os(f"Limite detectado no terminal '{agent}'. Retorno agendado para {target_dt.strftime('%H:%M:%S')}.")
+                                    log(f"Scheduling wake-up message for {agent} at {target_dt.strftime('%Y-%m-%d %H:%M:%S')} (10 min 21 s after reset)", print_to_console=True)
+                                    notify_os(f"Limite detectado no terminal '{agent}'. Retorno agendado para {target_dt.strftime('%H:%M:%S')} (10 min 21 s após o reset).")
                                     if agent not in state["scheduled_resets"]:
                                         state["scheduled_resets"][agent] = []
                                     state["scheduled_resets"][agent].append(target_dt)
