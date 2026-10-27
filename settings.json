@@ -1,9 +1,17 @@
 {
     "auto_monitor_enabled": true,
+    "ignore_work_filter": true,
     "architect": "Codex",
     "workers": [
-        "OpenCode"
+        "Antigravity",
+        "OpenCode",
+        "Claude Code"
     ],
-    "agent_states": {},
+    "agent_states": {
+        "Codex": "ocioso",
+        "Antigravity": "ocioso",
+        "OpenCode": "ocioso",
+        "Claude Code": "ocioso"
+    },
     "wake_prompts": {}
 }

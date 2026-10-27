@@ -1,0 +1,56 @@
+[
+    {
+        "agent": "Codex",
+        "status": "aprovado",
+        "timestamp": "2026-08-14T22:11:43.541098",
+        "processed": true
+    },
+    {
+        "agent": "Codex",
+        "status": "aprovado",
+        "timestamp": "2026-08-14T22:22:46.430956",
+        "processed": true
+    },
+    {
+        "agent": "Codex",
+        "status": "aprovado",
+        "timestamp": "2026-08-15T19:55:01.310641",
+        "processed": true
+    },
+    {
+        "agent": "Codex #2",
+        "status": "trabalhando",
+        "timestamp": "2026-08-27T15:40:23.841835",
+        "processed": true
+    },
+    {
+        "agent": "Codex #2",
+        "status": "concluido",
+        "timestamp": "2026-08-27T15:56:12.229404",
+        "processed": true
+    },
+    {
+        "agent": "Codex #2",
+        "status": "trabalhando",
+        "timestamp": "2026-08-27T16:01:16.148783",
+        "processed": true
+    },
+    {
+        "agent": "Claude Code #2",
+        "status": "trabalhando",
+        "timestamp": "2026-08-29T21:48:15.362009",
+        "processed": true
+    },
+    {
+        "agent": "Claude Code #2",
+        "status": "aprovado",
+        "timestamp": "2026-08-29T21:53:07.467971",
+        "processed": true
+    },
+    {
+        "agent": "Planner",
+        "status": "trabalhando",
+        "timestamp": "2026-09-22T11:22:59.651542",
+        "processed": true
+    }
+]

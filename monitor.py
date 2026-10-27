@@ -11,15 +11,20 @@ import os
 TASKS_FILE = "/Users/caioamaraldepieri/maestri-monitor/tasks.json"
 SIGNALS_FILE = "/Users/caioamaraldepieri/maestri-monitor/signals.json"
 SETTINGS_FILE = "/Users/caioamaraldepieri/maestri-monitor/settings.json"
+# Fila de limpezas: um arquivo .json por pedido, escrito pela CLI `limpar` e consumido pelo loop
+LIMPEZAS_DIR = "/Users/caioamaraldepieri/maestri-monitor/limpezas"
 
 # Regex patterns to extract the reset time from rate-limited terminal screens
 RESET_REGEX = re.compile(r"resets\s+(\d+(?::\d+)?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?", re.IGNORECASE)
 TRY_AGAIN_REGEX = re.compile(r"try\s+again\s+at\s+(\d+(?::\d+)?\s*(?:am|pm)?)", re.IGNORECASE)
+# Claude Code e Codex mostram "esc to interrupt" enquanto trabalham
+TRABALHANDO_REGEX = re.compile(r"esc to interrupt", re.IGNORECASE)
 
 # Configuration & State (Using RLock for reentrant locking safety)
 state_lock = threading.RLock()
 state = {
     "auto_monitor_enabled": True,
+    "ignore_work_filter": False,
     "architect": "Claude Code",
     "workers": ["Jarvis Codex"],
     "agent_states": {},      # agent_name -> "ocioso" | "trabalhando" | "concluido"
@@ -49,7 +54,7 @@ def log(message, print_to_console=False):
 def notify_os(message):
     """Sends a native macOS desktop notification using AppleScript."""
     try:
-        escaped_msg = message.replace('"', '\\"').replace("'", "\\'")
+        escaped_msg = message.replace('\\', '\\\\').replace('"', '\\"')
         cmd = ["osascript", "-e", f'display notification "{escaped_msg}" with title "Maestri Monitor"']
         subprocess.Popen(cmd)
     except Exception as e:
@@ -114,6 +119,7 @@ def load_settings():
         
     with state_lock:
         state["auto_monitor_enabled"] = True
+        state["ignore_work_filter"] = False
         state["architect"] = default_arch
         state["workers"] = default_workers
         state["agent_states"] = {}
@@ -128,6 +134,7 @@ def load_settings():
             data = json.load(f)
         with state_lock:
             state["auto_monitor_enabled"] = data.get("auto_monitor_enabled", True)
+            state["ignore_work_filter"] = data.get("ignore_work_filter", False)
             state["architect"] = data.get("architect", default_arch)
             state["workers"] = data.get("workers", default_workers)
             state["agent_states"] = data.get("agent_states", {})
@@ -172,6 +179,7 @@ def save_settings():
     with state_lock:
         data = {
             "auto_monitor_enabled": state["auto_monitor_enabled"],
+            "ignore_work_filter": state.get("ignore_work_filter", False),
             "architect": state["architect"],
             "workers": state["workers"],
             "agent_states": state["agent_states"],
@@ -227,6 +235,7 @@ def update_canvas_note():
     
     with state_lock:
         auto_enabled = state["auto_monitor_enabled"]
+        ignore_filter = state.get("ignore_work_filter", False)
         resets = dict(state["scheduled_resets"])
         custom_tasks = list(state["custom_tasks"])
         architect = state["architect"]
@@ -236,6 +245,8 @@ def update_canvas_note():
     content.append("# 🖥️ Status do Monitor Maestri")
     content.append(f"**Última Atualização:** {now_str}")
     content.append(f"**Monitoramento Automático:** {'✅ ATIVADO' if auto_enabled else '❌ DESATIVADO'}")
+    if auto_enabled:
+        content.append(f"**Filtro 'Trabalhando':** {'❌ DESATIVADO (Varre todos)' if ignore_filter else '✅ ATIVADO (Apenas em trabalho)'}")
     content.append("")
     
     content.append("## 🚦 Workflow de Desenvolvimento:")
@@ -315,14 +326,18 @@ def check_agent_limit(agent_name):
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         output = result.stdout
         
-        if "limit" in output.lower():
-            match = RESET_REGEX.search(output)
+        # Only check the last 15 lines of the terminal buffer to avoid historical or contextual false positives
+        lines = output.splitlines()
+        last_lines = "\n".join(lines[-15:])
+        
+        if "limit" in last_lines.lower():
+            match = RESET_REGEX.search(last_lines)
             if match:
                 time_str = match.group(1)
                 tz_str = match.group(2) if match.group(2) else "local"
                 return time_str, tz_str
             
-            match = TRY_AGAIN_REGEX.search(output)
+            match = TRY_AGAIN_REGEX.search(last_lines)
             if match:
                 time_str = match.group(1)
                 return time_str, "local"
@@ -389,6 +404,71 @@ def execute_custom_task(task):
             t = threading.Thread(target=send_message_sequence, args=(agent, agent_commands))
             t.daemon = True
             t.start()
+
+def agente_ocioso(agent_name):
+    """True se a tela do agente não mostra trabalho em curso nas últimas 15 linhas."""
+    try:
+        result = subprocess.run(["maestri", "check", agent_name], capture_output=True, text=True, check=True, timeout=60)
+    except Exception as e:
+        log(f"Erro ao checar {agent_name}: {e}")
+        return False
+    if "No connection" in result.stdout:
+        log(f"Sem conexão com {agent_name}")
+        return False
+    return not TRABALHANDO_REGEX.search("\n".join(result.stdout.splitlines()[-15:]))
+
+def esperar_ocioso(agent_name, prazo):
+    """Espera duas leituras ociosas seguidas, a 10 s uma da outra, até o prazo."""
+    while datetime.now() < prazo:
+        if agente_ocioso(agent_name):
+            time.sleep(10)
+            if agente_ocioso(agent_name):
+                return True
+        time.sleep(15)
+    return False
+
+def executar_limpeza(pedido):
+    """Espera o agente terminar o turno, limpa o contexto e injeta o prompt do pedido."""
+    agente, prompt, limpeza = pedido["agente"], pedido["prompt"], pedido.get("limpeza", "/clear")
+    if not esperar_ocioso(agente, datetime.now() + timedelta(hours=2)):
+        log(f"Limpeza de {agente} abandonada: não ficou ocioso em 2 h", print_to_console=True)
+        notify_os(f"Limpeza de '{agente}' abandonada: não ficou ocioso em 2 h.")
+        return
+    try:
+        # Enter é CR (\x0d): o LF de "\n" vira quebra de linha na caixa do Claude Code e o /clear não roda
+        # (medido em 30/09). O primeiro CR pode só escolher o item do autocompletar do "/"; o segundo, em prompt vazio, é inócuo
+        for bruto in (limpeza + "\\x0d", "\\x0d"):
+            r = subprocess.run(["maestri", "ask", agente, "--raw", bruto], capture_output=True, text=True, timeout=60)
+            log(f"raw {bruto!r} para {agente}: rc={r.returncode} {(r.stderr or '').strip()[-200:]}")
+            time.sleep(2)
+    except Exception as e:
+        log(f"Erro ao limpar {agente}: {e}", print_to_console=True)
+        return
+    if not esperar_ocioso(agente, datetime.now() + timedelta(minutes=5)):
+        log(f"{agente} não voltou ocioso depois de '{limpeza}'; prompt não injetado", print_to_console=True)
+        notify_os(f"'{agente}' não voltou depois de '{limpeza}'; prompt não injetado.")
+        return
+    log(f"Contexto de {agente} limpo com '{limpeza}'; injetando prompt ({len(prompt)} caracteres)", print_to_console=True)
+    # `ask` bloqueia até o agente terminar o prompt; roda solto para não segurar a thread
+    subprocess.Popen(["maestri", "ask", agente, prompt], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def processar_limpezas():
+    """Consome a fila de pedidos de limpeza, um thread por pedido."""
+    try:
+        nomes = sorted(n for n in os.listdir(LIMPEZAS_DIR) if n.endswith(".json"))
+    except FileNotFoundError:
+        return
+    for nome in nomes:
+        caminho = os.path.join(LIMPEZAS_DIR, nome)
+        try:
+            with open(caminho, encoding="utf-8") as f:
+                pedido = json.load(f)
+            os.remove(caminho)
+        except Exception as e:
+            log(f"Pedido de limpeza ilegível {nome}: {e}")
+            continue
+        log(f"Limpeza pedida para {pedido['agente']}: aguardando ficar ocioso", print_to_console=True)
+        threading.Thread(target=executar_limpeza, args=(pedido,), daemon=True).start()
 
 def load_tasks():
     """Loads custom tasks from persistent JSON file."""
@@ -551,6 +631,9 @@ def background_loop():
             
             # 1. Process workflow signals
             process_signals()
+
+            # 1b. Pedidos de limpeza de contexto (CLI `limpar`)
+            processar_limpezas()
             
             # 2. Handle Automatic Rate Limit Monitoring (if enabled)
             with state_lock:
@@ -558,13 +641,15 @@ def background_loop():
                 
             if monitor_enabled:
                 agents = get_connected_agents()
+                with state_lock:
+                    ignore_filter = state.get("ignore_work_filter", False)
                 for agent in agents:
                     if agent.lower() == "shell":
                         continue
                         
                     # CRITICAL WAKE RULE: Only monitor rate-limit if agent's current state is "trabalhando"
                     agent_state = get_agent_state(agent)
-                    if agent_state != "trabalhando":
+                    if not ignore_filter and agent_state != "trabalhando":
                         continue
                         
                     limit_info = check_agent_limit(agent)
@@ -847,6 +932,34 @@ def handle_wake_prompt_cli():
     save_settings()
     print(f"✓ Prompt de retorno configurado para '{agent_name}': '{prompt}' (Fixo: {fixed})")
 
+def handle_limpar_cli():
+    """Enfileira: quando o agente ficar ocioso, limpar o contexto e injetar o prompt do arquivo."""
+    if len(sys.argv) < 4:
+        print("Uso: python3 monitor.py limpar '<agente>' <arquivo_do_prompt> [comando_de_limpeza]")
+        print("Exemplo: python3 monitor.py limpar 'Project Lead Novo' /tmp/retomada.md")
+        print("O comando de limpeza padrão é /clear (Claude Code). No Codex, /new pode abrir um menu: não testado.")
+        sys.exit(1)
+    agente, arquivo = sys.argv[2], sys.argv[3]
+    limpeza = sys.argv[4] if len(sys.argv) > 4 else "/clear"
+    try:
+        with open(arquivo, encoding="utf-8") as f:
+            prompt = f.read().strip()
+    except OSError as e:
+        print(f"Erro: não consegui ler {arquivo}: {e}")
+        sys.exit(1)
+    if not prompt:
+        print(f"Erro: {arquivo} está vazio.")
+        sys.exit(1)
+    os.makedirs(LIMPEZAS_DIR, exist_ok=True)
+    nome = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+    temporario = os.path.join(LIMPEZAS_DIR, f".{nome}.tmp")
+    with open(temporario, "w", encoding="utf-8") as f:
+        json.dump({"agente": agente, "prompt": prompt, "limpeza": limpeza, "criado": datetime.now().isoformat()}, f, ensure_ascii=False)
+    os.replace(temporario, os.path.join(LIMPEZAS_DIR, f"{nome}.json"))
+    log(f"Limpeza enfileirada via CLI para {agente} ({limpeza})")
+    print(f"✓ Limpeza de '{agente}' enfileirada: o monitor espera ele ficar ocioso, roda '{limpeza}' e injeta o prompt.")
+    sys.exit(0)
+
 def handle_schedule_task_cli():
     """Handles programmatic task scheduling via CLI from agent terminals."""
     if len(sys.argv) < 5:
@@ -916,15 +1029,16 @@ def interactive_menu():
     print("          MAESTRI INTERACTIVE MONITOR & SCHEDULER")
     print("=" * 60)
     print("Comandos disponíveis:")
-    print("  status       - Exibe o estado do monitoramento e agendamentos")
-    print("  toggle       - Ativa/Desativa o monitoramento automático de limite")
-    print("  roles        - Configura dinamicamente quem é o Arquiteto e os Operários")
-    print("  schedule     - Menu interativo para criar agendamento personalizado")
-    print("  cancel       - Cancela um agendamento personalizado por ID")
-    print("  create-note  - Cria uma nota de status acoplada no canvas")
-    print("  logs [n]     - Imprime os últimos N registros de log (padrão: 15)")
-    print("  help         - Mostra esta ajuda")
-    print("  exit         - Finaliza o script")
+    print("  status        - Exibe o estado do monitoramento e agendamentos")
+    print("  toggle        - Ativa/Desativa o monitoramento automático de limite")
+    print("  toggle-filter - Ativa/Desativa o filtro 'trabalhando' do monitoramento")
+    print("  roles         - Configura dinamicamente quem é o Arquiteto e os Operários")
+    print("  schedule      - Menu interativo para criar agendamento personalizado")
+    print("  cancel        - Cancela um agendamento personalizado por ID")
+    print("  create-note   - Cria uma nota de status acoplada no canvas")
+    print("  logs [n]      - Imprime os últimos N registros de log (padrão: 15)")
+    print("  help          - Mostra esta ajuda")
+    print("  exit          - Finaliza o script")
     print("-" * 60)
     
     while state["running"]:
@@ -939,7 +1053,7 @@ def interactive_menu():
                 state["running"] = False
                 break
             elif cmd == "help":
-                print("Comandos: status, toggle, roles, schedule, cancel, create-note, logs [n], help, exit")
+                print("Comandos: status, toggle, toggle-filter, roles, schedule, cancel, create-note, logs [n], help, exit")
             elif cmd == "toggle":
                 with state_lock:
                     state["auto_monitor_enabled"] = not state["auto_monitor_enabled"]
@@ -947,6 +1061,14 @@ def interactive_menu():
                 save_settings()
                 print(f"Monitoramento automático de limite: {status}")
                 log(f"Auto monitoring toggled to: {status}")
+                threading.Thread(target=update_canvas_note).start()
+            elif cmd == "toggle-filter":
+                with state_lock:
+                    state["ignore_work_filter"] = not state.get("ignore_work_filter", False)
+                    status = "DESATIVADO (Varre todos)" if state["ignore_work_filter"] else "ATIVADO (Apenas em trabalho)"
+                save_settings()
+                print(f"Filtro 'Trabalhando': {status}")
+                log(f"Work state filter toggled to: {status}")
                 threading.Thread(target=update_canvas_note).start()
             elif cmd == "roles":
                 agents = get_connected_agents()
@@ -1040,6 +1162,7 @@ def interactive_menu():
                 print("-" * 50)
                 with state_lock:
                     print(f"Monitoramento automático: {'ATIVADO' if state['auto_monitor_enabled'] else 'DESATIVADO'}")
+                    print(f"Filtro 'Trabalhando': {'DESATIVADO (Varre todos)' if state.get('ignore_work_filter', False) else 'ATIVADO (Apenas em trabalho)'}")
                     print(f"Arquiteto (Validador): {state['architect']} (Estado: {get_agent_state(state['architect']).upper()})")
                     print(f"Operário(s) (Executor): {', '.join(state['workers'])}")
                     for w in state['workers']:
@@ -1304,6 +1427,8 @@ if __name__ == "__main__":
             handle_set_role_cli()
         elif arg == "schedule-task":
             handle_schedule_task_cli()
+        elif arg == "limpar":
+            handle_limpar_cli()
         else:
             print(f"Comando CLI desconhecido: '{arg}'")
             sys.exit(1)

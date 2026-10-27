@@ -71,3 +71,21 @@ O script não exige instalação de pacotes externos (`pip`). É necessário ape
 * `monitor.py` - Script principal contendo a interface e os threads de controle.
 * `tasks.json` - Arquivo gerado automaticamente onde ficam salvos os agendamentos ativos.
 * `monitor.log` - Registro de log detalhado das execuções em segundo plano.
+
+---
+
+## Limpeza de contexto com retomada (`limpar`)
+
+Ao fim de uma entrega, um agente pede para ser limpo e retomado com um prompt novo:
+
+```bash
+python3 ~/maestri-monitor/monitor.py limpar "<nome do agente no canvas>" <arquivo_do_prompt> [comando_de_limpeza]
+```
+
+* A CLI só enfileira o pedido em `limpezas/` e sai; quem executa é o monitor em execução, a cada 15 s.
+* O monitor espera o agente ficar ocioso (duas leituras seguidas, sem "esc to interrupt" na tela), manda o comando de limpeza (padrão `/clear`), espera ele voltar e injeta o conteúdo do arquivo como prompt.
+* Serve para o agente pedir a própria limpeza: ele enfileira como última ação da entrega, termina o turno, e o monitor faz o resto. Antes de enfileirar, a continuidade tem que estar em arquivo (handoff, spec), e o prompt deve apontar para esse arquivo.
+* O agente alvo precisa estar conectado ao terminal do monitor no canvas. Se não ficar ocioso em 2 h, o pedido é abandonado com notificação.
+* Codex: `/new` pode abrir um menu de escolha; não testado.
+* Grok: a tela dele não mostra "esc to interrupt" enquanto trabalha (mostra "Waiting for response… [stop]"); o monitor o veria sempre ocioso. Não use `limpar` em terminal Grok.
+* Depois de atualizar o `monitor.py`, reinicie o monitor (`exit` e `python3 monitor.py`).
